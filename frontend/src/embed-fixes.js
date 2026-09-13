@@ -28,7 +28,7 @@ style.textContent=`
 `;
 document.head.appendChild(style);
 
-/* Parse normal embed URLs locally so the Embed button does not wait on a server round-trip. */
+/* Local first, universal fallback second. Unknown providers are resolved only once and cached. */
 function parseEmbedLocally(input){
  const raw=String(input||'').trim();
  const iframe=raw.match(/<iframe[\s\S]*?<\/iframe>/i)?.[0];
@@ -46,24 +46,75 @@ function parseEmbedLocally(input){
   if(host==='youtu.be')id=u.pathname.slice(1);
   if(u.pathname.startsWith('/shorts/'))id=u.pathname.split('/')[2];
   if(!id)throw Error('Invalid YouTube URL');
-  return{type:'embed',provider:'youtube',url:raw,embedUrl:`https://www.youtube.com/embed/${encodeURIComponent(id)}`,thumbnail:`https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`,title:'YouTube video'};
+  const encoded=encodeURIComponent(id);
+  return{type:'embed',provider:'youtube',url:raw,embedUrl:`https://www.youtube.com/embed/${encoded}`,thumbnail:`https://i.ytimg.com/vi/${encoded}/hqdefault.jpg`,title:'YouTube video'};
  }
  if(host==='vimeo.com')return{type:'embed',provider:'vimeo',url:raw,embedUrl:raw.replace('https://vimeo.com/','https://player.vimeo.com/video/'),title:'Vimeo video'};
  if(host==='open.spotify.com')return{type:'embed',provider:'spotify',url:raw,embedUrl:raw.replace('/track/','/embed/track/').replace('/playlist/','/embed/playlist/'),title:'Spotify'};
  return{type:'embed',provider:'link',url:raw,embedUrl:null,title:'Link'};
 }
 
+const originalFetch=window.fetch.bind(window);
+const embedMetaCache=new Map();
+const embedResolveCache=new Map();
+const EMBED_RESOLVE_TIMEOUT=5000;
+function cacheEmbedMeta(embed){
+ if(!embed?.url)return;
+ const keys=[embed.url,embed.embedUrl].filter(Boolean);
+ for(const key of keys)embedMetaCache.set(key,embed);
+}
+function extractIframeSrc(html){
+ const src=String(html||'').match(/<iframe[\s\S]*?src=["']([^"']+)["'][\s\S]*?>/i)?.[1];
+ return src&&/^https?:\/\//i.test(src)?src:'';
+}
+function providerFromName(name){
+ const n=String(name||'').toLowerCase();
+ if(n.includes('youtube'))return'youtube';
+ if(n.includes('vimeo'))return'vimeo';
+ if(n.includes('spotify'))return'spotify';
+ return 'custom';
+}
+async function resolveWithNoembed(embed){
+ if(!embed?.url||embed.provider!=='link')return embed;
+ const key=embed.url;
+ const cached=embedResolveCache.get(key);
+ if(cached)return cached;
+ const promise=(async()=>{
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),EMBED_RESOLVE_TIMEOUT);
+  try{
+   const r=await originalFetch('https://noembed.com/embed?url='+encodeURIComponent(key),{headers:{Accept:'application/json'},signal:controller.signal});
+   if(!r.ok)return embed;
+   const data=await r.json();
+   const src=extractIframeSrc(data.html);
+   if(!src)return{...embed,title:data.title||embed.title,description:data.description||'',thumbnail:data.thumbnail_url||null,provider:'link'};
+   const resolved={...embed,provider:providerFromName(data.provider_name),embedUrl:src,html:data.html,title:data.title||embed.title,description:data.description||'',thumbnail:data.thumbnail_url||null,sandbox:true};
+   cacheEmbedMeta(resolved);
+   return resolved;
+  }catch{return embed}
+  finally{clearTimeout(timer)}
+ })();
+ embedResolveCache.set(key,promise);
+ return promise;
+}
+async function resolveEmbed(input){
+ let embed;
+ try{embed=parseEmbedLocally(input)}catch(e){throw e}
+ cacheEmbedMeta(embed);
+ return embed.provider==='link'?resolveWithNoembed(embed):embed;
+}
+
 function youtubeIdFromEmbed(src){
  const m=String(src||'').match(/youtube\.com\/embed\/([^?&#/]+)/i);
  return m?.[1]||'';
 }
-function providerLabel(data){return data.provider==='youtube'?'YouTube':data.provider==='vimeo'?'Vimeo':data.provider==='spotify'?'Spotify':'Embedded link'}
 function makePreview(shell,iframe){
  if(!shell||!iframe||shell.dataset.frostPreviewReady==='1')return;
  const src=iframe.getAttribute('src')||iframe.src||'';
  if(!src||src==='about:blank'||iframe.dataset.frostLoaded==='1')return;
  shell.dataset.frostPreviewReady='1';
- const provider=iframe.title==='youtube'||/youtube\.com\/embed\//i.test(src)?'youtube':/vimeo\.com\/video\//i.test(src)?'vimeo':/spotify\.com\/embed\//i.test(src)?'spotify':'custom';
+ const cached=embedMetaCache.get(src)||embedMetaCache.get(iframe.getAttribute('src')||'');
+ const provider=cached?.provider&&cached.provider!=='link'?cached.provider:iframe.title==='youtube'||/youtube\.com\/embed\//i.test(src)?'youtube':/vimeo\.com\/video\//i.test(src)?'vimeo':/spotify\.com\/embed\//i.test(src)?'spotify':'custom';
  const card=document.createElement('button');
  card.type='button';
  card.className='frost-embed-preview';
@@ -72,30 +123,32 @@ function makePreview(shell,iframe){
  const text=document.createElement('span');
  const title=document.createElement('span');
  title.className='frost-embed-preview-title';
- title.textContent=provider==='youtube'?'YouTube video':provider==='vimeo'?'Vimeo video':provider==='spotify'?'Spotify':'Embedded content';
+ title.textContent=cached?.title|| (provider==='youtube'?'YouTube video':provider==='vimeo'?'Vimeo video':provider==='spotify'?'Spotify':'Embedded content');
  const label=document.createElement('span');
  label.className='frost-embed-preview-provider';
- label.textContent=provider==='youtube'?'Video preview':provider==='vimeo'?'Video preview':provider==='spotify'?'Media preview':'Preview';
+ label.textContent=provider==='youtube'?'Video preview':provider==='vimeo'?'Video preview':provider==='spotify'?'Media preview':cached?.provider==='custom'?'Rich preview':'Link preview';
  text.append(title,label);
  const play=document.createElement('span');
  play.className='frost-embed-play';
  play.textContent='▶';
  copy.append(text,play);
- if(provider==='youtube'){
-  const id=youtubeIdFromEmbed(src);
-  if(id){const img=document.createElement('img');img.src=`https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`;img.alt='';img.loading='lazy';card.appendChild(img)}
- }
+ const thumbnail=cached?.thumbnail||(provider==='youtube'?(()=>{const id=youtubeIdFromEmbed(src);return id?`https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`:''})():'');
+ if(thumbnail){const img=document.createElement('img');img.src=thumbnail;img.alt='';img.loading='lazy';card.appendChild(img)}
  card.appendChild(copy);
  shell.appendChild(card);
  iframe.dataset.frostOriginalSrc=src;
  iframe.src='about:blank';
- card.addEventListener('click',()=>{
+ card.addEventListener('click',async()=>{
   shell.classList.add('frost-embed-loaded');
   iframe.dataset.frostLoaded='1';
   iframe.style.opacity='1';
   iframe.src=iframe.dataset.frostOriginalSrc||src;
   card.remove();
  },{once:true});
+ if(!cached&&provider==='custom'){
+  const loading=resolveWithNoembed({type:'embed',provider:'link',url:src,embedUrl:src,title:'Embedded content'});
+  loading.then(meta=>{if(meta&&meta!==embedMetaCache.get(src)){cacheEmbedMeta(meta);const current=card.isConnected; if(current){const cachedMeta=embedMetaCache.get(src);if(cachedMeta?.thumbnail&&!card.querySelector('img')){const img=document.createElement('img');img.src=cachedMeta.thumbnail;img.alt='';img.loading='lazy';card.prepend(img)}if(cachedMeta?.title)title.textContent=cachedMeta.title;label.textContent=cachedMeta?.provider==='custom'?'Rich preview':'Media preview'}}}});
+ }
 }
 function scanEmbeds(root=document){
  root.querySelectorAll?.('.embed-shell,.embed-popout-frame').forEach(shell=>makePreview(shell,shell.querySelector('iframe.embed')));
@@ -103,14 +156,14 @@ function scanEmbeds(root=document){
 scanEmbeds();
 new MutationObserver(mutations=>{for(const m of mutations){for(const node of m.addedNodes){if(node.nodeType===1){scanEmbeds(node);if(node.matches?.('.embed-shell,.embed-popout-frame'))makePreview(node,node.querySelector('iframe.embed'))}}}}).observe(document.documentElement,{subtree:true,childList:true});
 
-const originalFetch=window.fetch.bind(window);
 window.fetch=async(input,init={})=>{
  try{
   const url=typeof input==='string'?input:(input?.url||'');
   const method=init?.method?.toUpperCase()||'GET';
   if(url.endsWith('/api/embeds/parse')&&method==='POST'&&typeof init.body==='string'){
    const body=JSON.parse(init.body);
-   return new Response(JSON.stringify({embed:parseEmbedLocally(body?.input)}),{status:200,headers:{'Content-Type':'application/json'}});
+   const embed=await resolveEmbed(body?.input);
+   return new Response(JSON.stringify({embed}),{status:200,headers:{'Content-Type':'application/json'}});
   }
   if(url.includes('/api/conversations/')&&url.endsWith('/messages')&&method==='POST'&&typeof init.body==='string'){
    const body=JSON.parse(init.body);
