@@ -18,18 +18,50 @@ style.textContent=`
 `;
 document.head.appendChild(style);
 
-/* Keep the outgoing payload deterministic even though the UI no longer exposes ratio controls. */
+/* Parse normal embed URLs locally so the Embed button does not wait on a server round-trip. */
+function parseEmbedLocally(input){
+ const raw=String(input||'').trim();
+ const iframe=raw.match(/<iframe[\\s\\S]*?<\\/iframe>/i)?.[0];
+ if(iframe){
+  const src=iframe.match(/src=[\"']([^\"']+)[\"']/i)?.[1];
+  if(!src)throw Error('Iframe has no safe source');
+  if(!/^https?:\\/\\//i.test(src))throw Error('Iframe has no safe source');
+  return{type:'embed',provider:'custom',url:src,embedUrl:src,html:iframe,sandbox:true};
+ }
+ const u=new URL(raw);
+ if(!['http:','https:'].includes(u.protocol))throw Error('Unsupported URL');
+ const host=u.hostname.toLowerCase().replace(/^www\\./,'');
+ if(host==='youtube.com'||host==='youtu.be'||host==='m.youtube.com'){
+  let id=u.searchParams.get('v');
+  if(host==='youtu.be')id=u.pathname.slice(1);
+  if(u.pathname.startsWith('/shorts/'))id=u.pathname.split('/')[2];
+  if(!id)throw Error('Invalid YouTube URL');
+  return{type:'embed',provider:'youtube',url:raw,embedUrl:`https://www.youtube.com/embed/${encodeURIComponent(id)}`};
+ }
+ if(host==='vimeo.com')return{type:'embed',provider:'vimeo',url:raw,embedUrl:raw.replace('https://vimeo.com/','https://player.vimeo.com/video/')};
+ if(host==='open.spotify.com')return{type:'embed',provider:'spotify',url:raw,embedUrl:raw.replace('/track/','/embed/track/').replace('/playlist/','/embed/playlist/')};
+ return{type:'embed',provider:'link',url:raw,embedUrl:null};
+}
+
 const originalFetch=window.fetch.bind(window);
 window.fetch=async(input,init={})=>{
  try{
   const url=typeof input==='string'?input:(input?.url||'');
-  if(url.includes('/api/conversations/')&&url.endsWith('/messages')&&init?.method?.toUpperCase()==='POST'&&typeof init.body==='string'){
+  const method=init?.method?.toUpperCase()||'GET';
+  if(url.endsWith('/api/embeds/parse')&&method==='POST'&&typeof init.body==='string'){
+   const body=JSON.parse(init.body);
+   return new Response(JSON.stringify({embed:parseEmbedLocally(body?.input)}),{status:200,headers:{'Content-Type':'application/json'}});
+  }
+  if(url.includes('/api/conversations/')&&url.endsWith('/messages')&&method==='POST'&&typeof init.body==='string'){
    const body=JSON.parse(init.body);
    if(body?.type==='embed'&&body.payload&&typeof body.payload==='object'){
     body.payload={...body.payload,aspectRatio:DEFAULT_RATIO};
     init={...init,body:JSON.stringify(body)};
    }
   }
- }catch{}
+ }catch(e){
+  const url=typeof input==='string'?input:(input?.url||'');
+  if(url.endsWith('/api/embeds/parse'))return new Response(JSON.stringify({error:e.message||'Invalid embed'}),{status:400,headers:{'Content-Type':'application/json'}});
+ }
  return originalFetch(input,init);
 };
