@@ -175,7 +175,7 @@ async function requireMember(req, res) {
 app.get('/api/conversations/:id/messages', auth, async (req, res) => {
   if (!(await requireMember(req, res))) return;
   const limit = Math.min(Number(req.query.limit) || 80, 200);
-  const { data, error } = await db.from('messages').select('*,sender:profiles(id,username,display_name,avatar_url),reactions:message_reactions(*)').eq('conversation_id', req.params.id).order('created_at', { ascending: true }).limit(limit);
+  const { data, error } = await db.from('messages').select('*,sender:profiles!messages_sender_id_fkey(id,username,display_name,avatar_url),reactions:message_reactions(*)').eq('conversation_id', req.params.id).order('created_at', { ascending: true }).limit(limit);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ messages: data || [] });
 });
@@ -187,7 +187,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   if (!allowedTypes.includes(type)) return res.status(400).json({ error: 'Invalid message type.' });
   if (type === 'text' && !String(body || '').trim()) return res.status(400).json({ error: 'Message is empty.' });
   if (type === 'embed' && payload.html) payload.html = cleanEmbedHtml(payload.html);
-  const { data, error } = await db.from('messages').insert({ conversation_id: req.params.id, sender_id: req.user.id, type, body, payload }).select('*,sender:profiles(id,username,display_name,avatar_url)').single();
+  const { data, error } = await db.from('messages').insert({ conversation_id: req.params.id, sender_id: req.user.id, type, body, payload }).select('*,sender:profiles!messages_sender_id_fkey(id,username,display_name,avatar_url)').single();
   if (error) return res.status(400).json({ error: error.message });
   await db.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', req.params.id);
   io.to(`conversation:${req.params.id}`).emit('message:new', data);
