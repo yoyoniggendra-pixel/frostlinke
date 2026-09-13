@@ -21,16 +21,16 @@ document.head.appendChild(style);
 /* Parse normal embed URLs locally so the Embed button does not wait on a server round-trip. */
 function parseEmbedLocally(input){
  const raw=String(input||'').trim();
- const iframe=raw.match(/<iframe[\\s\\S]*?<\\/iframe>/i)?.[0];
+ const iframe=raw.match(/<iframe[\s\S]*?<\/iframe>/i)?.[0];
  if(iframe){
-  const src=iframe.match(/src=[\"']([^\"']+)[\"']/i)?.[1];
+  const src=iframe.match(/src=["']([^"']+)["']/i)?.[1];
   if(!src)throw Error('Iframe has no safe source');
-  if(!/^https?:\\/\\//i.test(src))throw Error('Iframe has no safe source');
+  if(!/^https?:\/\//i.test(src))throw Error('Iframe has no safe source');
   return{type:'embed',provider:'custom',url:src,embedUrl:src,html:iframe,sandbox:true};
  }
  const u=new URL(raw);
  if(!['http:','https:'].includes(u.protocol))throw Error('Unsupported URL');
- const host=u.hostname.toLowerCase().replace(/^www\\./,'');
+ const host=u.hostname.toLowerCase().replace(/^www\./,'');
  if(host==='youtube.com'||host==='youtu.be'||host==='m.youtube.com'){
   let id=u.searchParams.get('v');
   if(host==='youtu.be')id=u.pathname.slice(1);
