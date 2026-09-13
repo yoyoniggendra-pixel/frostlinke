@@ -1,0 +1,72 @@
+name: FROSTLINK request UI repair
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !startsWith(github.event.head_commit.message, '[frostlink-auto2]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Repair request UI and frontend behavior
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          f=Path('frontend/src/main.jsx')
+          s=f.read_text()
+
+          # The old UI had both Accept and Decline. Replace the complete request-panel branch.
+          old=re.compile(r"if\(panel==='requests'\)return <div className=\"side-panel glass\"><PanelHead title=\"Message Requests\" close=\{close\}/>.+?</div>;if\(panel==='settings'\)",re.S)
+          new="""if(panel==='requests')return <div className=\"side-panel glass\"><PanelHead title=\"Message Requests\" close={close}/>{requests.map(r=><div className=\"request\" key={r.id}><Avatar p={r.sender}/><div><b>@{r.sender?.username}</b><small>{r.sender?.display_name}</small><p>{r.initial_message||'Wants to message you.'}</p><button className=\"primary small request-accept\" onClick={()=>handleRequest(r.id,'accepted')} aria-label=\"Accept request\" title=\"Accept request\">✓</button></div></div>)}{!requests.length&&<div className=\"empty\">No pending requests.</div>}</div>;if(panel==='settings')"""
+          if not old.search(s):
+              raise SystemExit('Request panel pattern not found')
+          s=old.sub(new,s,count=1)
+          f.write_text(s)
+
+          css=Path('frontend/src/styles.css')
+          c=css.read_text()
+          additions="""\n.user-results button.request-sent{opacity:.72;cursor:default;background:#42c9f10d}.user-results button.request-sent:hover{background:#42c9f10d}.search-action{flex:none!important;color:#8bdff5;font-size:9px!important;white-space:nowrap}.request-accept{width:34px;height:30px;display:grid;place-items:center;margin-top:2px;font-size:15px!important}.request-accept:hover{filter:brightness(1.12)}\n"""
+          if '.request-accept{' not in c:
+              css.write_text(c+additions)
+
+          # Keep the request flow deterministic and prevent accidental decline calls.
+          text=f.read_text()
+          if 'handleRequest(r.id,\'declined\')' in text or '>Decline<' in text:
+              raise SystemExit('Decline action still present after repair')
+          if 'outgoingRequests.some' not in text:
+              raise SystemExit('Outgoing-request UI state missing')
+          if '✓ Request sent' not in text:
+              raise SystemExit('Request-sent search state missing')
+          if 'onClick={()=>handleRequest(r.id,\'accepted\')}' not in text:
+              raise SystemExit('Accept action missing')
+          PY
+
+      - name: Validate JavaScript and frontend build
+        run: |
+          node --check backend/src/server.js
+          cd frontend
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Commit verified repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/main.jsx frontend/src/styles.css
+          if git diff --cached --quiet; then
+            echo "No UI changes needed"
+            exit 0
+          fi
+          git commit -m "[frostlink-auto2] Repair message request UI"
+          git push
