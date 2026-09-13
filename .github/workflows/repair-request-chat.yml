@@ -1,0 +1,101 @@
+name: FROSTLINK real request chat
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !startsWith(github.event.head_commit.message, '[frostlink-auto3]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch request chat flow
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          f=Path('frontend/src/main.jsx')
+          s=f.read_text()
+
+          # Dedicated state for a pending request opened as a chat-like item.
+          marker="[requests,setRequests]=useState([]),[outgoingRequests,setOutgoingRequests]=useState([]),[panel,setPanel]"
+          replacement="[requests,setRequests]=useState([]),[outgoingRequests,setOutgoingRequests]=useState([]),[requestChat,setRequestChat]=useState(null),[panel,setPanel]"
+          if '[requestChat,setRequestChat]' not in s:
+              if marker not in s: raise SystemExit('state marker missing')
+              s=s.replace(marker,replacement,1)
+
+          # Open an outgoing request immediately as a request-chat preview.
+          old="await api('/api/message-requests',{method:'POST',body:JSON.stringify({recipient_id:u.id,initial_message:message})});await loadOutgoingRequests();alert(`Message request sent to @${u.username}.`);setSearch('');setUsers([])"
+          new="const created=await api('/api/message-requests',{method:'POST',body:JSON.stringify({recipient_id:u.id,initial_message:message})});const outgoing=created.request||{id:created.request?.id,recipient_id:u.id,initial_message:message,status:'pending'};setRequestChat({direction:'outgoing',request:outgoing});await loadOutgoingRequests();setSearch('');setUsers([])"
+          if old in s: s=s.replace(old,new,1)
+
+          # Clicking a normal conversation must leave request-chat mode.
+          old_conv="onClick={()=>setActive(c)}"
+          new_conv="onClick={()=>{setRequestChat(null);setActive(c)}}"
+          if old_conv not in s: raise SystemExit('conversation click marker missing')
+          s=s.replace(old_conv,new_conv,1)
+
+          # Add incoming/outgoing requests to the actual conversation list.
+          old_list="<div className=\"conversation-list\">{convos.map(c=><button className={active?.id===c.id?'conversation active':'conversation'} key={c.id} onClick={()=>{setRequestChat(null);setActive(c)}}><Avatar p={c.other}/><span className=\"conv-copy\"><b>{c.other?.display_name||c.title||'Conversation'}</b><small>{c.last?.body||c.last?.type||'No messages yet'}</small></span><time>{c.last?.created_at?fmt(c.last.created_at):''}</time></button>)}{!convos.length&&<div className=\"empty\">Search for a username to start a conversation.</div>}</div>"
+          new_list="<div className=\"conversation-list\">{requests.map(r=><button className={requestChat?.request?.id===r.id?'conversation request-conversation active':'conversation request-conversation'} key={'incoming-'+r.id} onClick={()=>{setActive(null);setRequestChat({direction:'incoming',request:r})}}><Avatar p={r.sender}/><span className=\"conv-copy\"><b>{r.sender?.display_name||r.sender?.username||'Message request'}</b><small>Message request: {r.initial_message}</small></span><time>NEW</time></button>)}{outgoingRequests.map(r=><button className={requestChat?.request?.id===r.id?'conversation request-conversation active':'conversation request-conversation'} key={'outgoing-'+r.id} onClick={()=>{setActive(null);setRequestChat({direction:'outgoing',request:r})}}><Avatar p={r.recipient}/><span className=\"conv-copy\"><b>{r.recipient?.display_name||r.recipient?.username||'Message request'}</b><small>Request pending: {r.initial_message}</small></span><time>WAIT</time></button>)}{convos.map(c=><button className={active?.id===c.id?'conversation active':'conversation'} key={c.id} onClick={()=>{setRequestChat(null);setActive(c)}}><Avatar p={c.other}/><span className=\"conv-copy\"><b>{c.other?.display_name||c.title||'Conversation'}</b><small>{c.last?.body||c.last?.type||'No messages yet'}</small></span><time>{c.last?.created_at?fmt(c.last.created_at):''}</time></button>)}{!convos.length&&!requests.length&&!outgoingRequests.length&&<div className=\"empty\">Search for a username to start a conversation.</div>}</div>"
+          if old_list not in s: raise SystemExit('conversation list marker missing')
+          s=s.replace(old_list,new_list,1)
+
+          # Clear request chat when the request is accepted and a real conversation is opened.
+          old_handle="const x=await api(`/api/message-requests/${id}/${action}`,{method:'POST'});setRequests(old=>old.filter(r=>r.id!==id));"
+          new_handle="const x=await api(`/api/message-requests/${id}/${action}`,{method:'POST'});setRequestChat(null);setRequests(old=>old.filter(r=>r.id!==id));setOutgoingRequests(old=>old.filter(r=>r.id!==id));"
+          if old_handle not in s: raise SystemExit('handleRequest marker missing')
+          s=s.replace(old_handle,new_handle,1)
+
+          # Insert a request-chat overlay directly inside the chat area, above messages/composer.
+          chat_marker='<section className="chat" onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={dropFile}><div className="chat-head">'
+          chat_new='<section className="chat" onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={dropFile}><div className="chat-head">'
+          if chat_marker not in s: raise SystemExit('chat marker missing')
+          overlay='''<>{requestChat&&<div className="request-chat-overlay"><div className="request-chat-card glass"><button className="request-chat-close" onClick={()=>setRequestChat(null)} aria-label="Close request"><X/></button><Avatar p={requestChat.direction==='incoming'?requestChat.request.sender:requestChat.request.recipient}/><div className="request-chat-label">MESSAGE REQUEST</div><h3>@{(requestChat.direction==='incoming'?requestChat.request.sender?.username:requestChat.request.recipient?.username)||'user'}</h3><p className="request-chat-message">{requestChat.request.initial_message}</p>{requestChat.direction==='incoming'?<><p className="request-chat-note">This person wants to start a conversation with you.</p><button className="primary request-chat-accept" onClick={()=>handleRequest(requestChat.request.id,'accepted')}>✓ Accept request</button></>:<p className="request-chat-note">Waiting for them to accept your message request.</p>}</div></div>}</>'''
+          # Overlay belongs after chat-head, so cover only chat body and composer.
+          head='</div><div className="chat-head">'
+          # use the first closing sequence after the chat head opening by replacing the exact known header tail
+          header_tail='<div className="chat-actions"><button title="Search"><Search/></button><button onClick={()=>setPanel(\'chat\')}><MoreHorizontal/></button></div></div>\n'
+          if header_tail not in s: raise SystemExit('chat header tail missing')
+          s=s.replace(header_tail,header_tail+overlay+'\n',1)
+
+          # Realtime: request arrival updates the request-chat list without a page reload.
+          event_marker="s.on('message:new',m=>{"
+          listener="s.on('message-request:new',async r=>{try{const x=await api('/api/message-requests');setRequests(x.requests||[]);await loadOutgoingRequests()}catch(e){console.error('Request update failed',e)}});"
+          if "message-request:new" not in s:
+              if event_marker not in s: raise SystemExit('socket event marker missing')
+              s=s.replace(event_marker,listener+event_marker,1)
+
+          f.write_text(s)
+
+          css=Path('frontend/src/styles.css')
+          c=css.read_text()
+          add='''\n.request-conversation{border:1px solid #55d7ff22;background:#42c9f108}.request-conversation small{color:#8ab6c6}.request-conversation time{font-size:8px;color:#70dfff}.request-chat-overlay{position:absolute;inset:68px 0 0;z-index:12;display:grid;place-items:center;padding:28px;background:linear-gradient(180deg,rgba(1,9,15,.88),rgba(1,12,19,.96));backdrop-filter:blur(14px)}.request-chat-card{width:min(500px,88%);border-radius:24px;padding:38px 34px;text-align:center;position:relative;box-shadow:0 25px 90px #000b}.request-chat-card>.avatar{width:68px;height:68px;margin:0 auto 16px;display:block}.request-chat-label{font-size:9px;letter-spacing:2px;color:#68dfff;margin-bottom:8px}.request-chat-card h3{margin:0;font-size:18px}.request-chat-message{margin:22px auto 12px;padding:16px 18px;max-width:420px;text-align:left;border:1px solid #59c2e62e;border-radius:16px;background:#020d16c7;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}.request-chat-note{font-size:10px;color:#7094a3;margin:12px 0 20px}.request-chat-accept{padding:11px 22px;font-size:11px}.request-chat-close{position:absolute;right:12px;top:12px;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:#328cad14;color:#79a9b8}.request-chat-close:hover{background:#4bc9f11a;color:#bff5ff}\n'''
+          if '.request-chat-overlay{' not in c: css.write_text(c+add)
+          PY
+
+      - name: Verify and build
+        run: |
+          node --check backend/src/server.js
+          grep -q "requestChat" frontend/src/main.jsx
+          grep -q "request-chat-overlay" frontend/src/styles.css
+          grep -q "message-request:new" frontend/src/main.jsx
+          cd frontend
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/main.jsx frontend/src/styles.css
+          git commit -m "[frostlink-auto3] Implement real message request chats" || exit 0
+          git push
