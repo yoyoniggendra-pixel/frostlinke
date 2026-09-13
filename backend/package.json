@@ -3,5 +3,5 @@
   "private":true,
   "version":"1.0.0",
   "type":"module",
-  "scripts":{"dev":"node --require ./src/giphy-preload.cjs --watch src/server.js","start":"node --require ./src/giphy-preload.cjs src/server.js"},
+  "scripts":{"dev":"node --require ./src/giphy-preload.cjs --require ./src/myinstants-preload.cjs --watch src/server.js","start":"node --require ./src/giphy-preload.cjs --require ./src/myinstants-preload.cjs src/server.js"},
   "dependencies":{"@supabase/supabase-js":"^2.57.0","cors":"^2.8.5","dotenv":"^17.4.2","express":"^4.21.2","sanitize-html":"^2.14.0","socket.io":"^4.8.1"}}
