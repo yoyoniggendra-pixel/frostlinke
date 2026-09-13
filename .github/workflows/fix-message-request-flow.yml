@@ -1,0 +1,112 @@
+name: FROSTLINK message request fix
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !startsWith(github.event.head_commit.message, '[frostlink-auto]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch backend and frontend safely
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          backend = root / 'backend/src/server.js'
+          frontend = root / 'frontend/src/main.jsx'
+
+          s = backend.read_text()
+
+          outgoing = """app.get('/api/message-requests/outgoing',auth,async(req,res)=>{\n const{data,error}=await db\n   .from('message_requests')\n   .select(`\n     id,\n     recipient_id,\n     initial_message,\n     status,\n     created_at,\n     recipient:profiles!message_requests_recipient_id_fkey(\n       id,\n       username,\n       display_name,\n       avatar_url\n     )\n   `)\n   .eq('sender_id',req.user.id)\n   .eq('status','pending')\n   .order('created_at',{ascending:false});\n\n if(error)\n   return res.status(500).json({error:error.message});\n\n res.json({requests:data||[]});\n});\n"""
+
+          if "app.get('/api/message-requests/outgoing'" not in s:
+              marker = "app.post('/api/message-requests/:id/:action',auth,async(req,res)=>"
+              if marker not in s:
+                  raise SystemExit('Backend marker for outgoing route not found')
+              s = s.replace(marker, outgoing + marker, 1)
+
+          new_action = r'''app.post('/api/message-requests/:id/:action',auth,async(req,res)=>{const action=req.params.action;if(!['accepted','accept'].includes(action))return res.status(400).json({error:'Invalid action'});const{data:r,error}=await db.from('message_requests').select('*').eq('id',req.params.id).eq('recipient_id',req.user.id).eq('status','pending').single();if(error||!r)return res.status(404).json({error:error?.message||'Request not found'});const{data:existingMember,error:existingError}=await db.from('conversation_members').select('conversation_id').eq('user_id',req.user.id);if(existingError)return res.status(500).json({error:existingError.message});const existingIds=(existingMember||[]).map(x=>x.conversation_id);if(existingIds.length){const{data:shared,error:sharedError}=await db.from('conversation_members').select('conversation_id').eq('user_id',r.sender_id).in('conversation_id',existingIds);if(sharedError)return res.status(500).json({error:sharedError.message});if(shared?.length){const conversationId=shared[0].conversation_id;const{error:ue}=await db.from('message_requests').update({status:'accepted'}).eq('id',r.id);if(ue)return res.status(500).json({error:ue.message});return res.json({ok:true,conversation_id:conversationId})}}const{data:c,error:ce}=await db.from('conversations').insert({kind:'direct'}).select().single();if(ce)return res.status(500).json({error:`Could not create conversation: ${ce.message}`});const{error:me}=await db.from('conversation_members').insert([{conversation_id:c.id,user_id:r.sender_id},{conversation_id:c.id,user_id:req.user.id}]);if(me){await db.from('conversations').delete().eq('id',c.id);return res.status(500).json({error:`Could not add conversation members: ${me.message}`})}let initialMessage=null;if(r.initial_message){const{data:msg,error:msgError}=await db.from('messages').insert({conversation_id:c.id,sender_id:r.sender_id,type:'text',body:r.initial_message}).select(`*,sender:profiles!messages_sender_id_fkey(id,username,display_name,avatar_url)`).single();if(msgError)return res.status(500).json({error:`Conversation created, but initial message failed: ${msgError.message}`});initialMessage=msg;await db.from('conversations').update({updated_at:new Date().toISOString()}).eq('id',c.id)}const{error:ae}=await db.from('message_requests').update({status:'accepted'}).eq('id',r.id);if(ae)return res.status(500).json({error:`Conversation created, but request status failed: ${ae.message}`});if(initialMessage){io.to(`conversation:${c.id}`).emit('message:new',initialMessage);io.to(`user:${r.sender_id}`).emit('message:new',initialMessage);io.to(`user:${req.user.id}`).emit('message:new',initialMessage)}res.json({ok:true,conversation_id:c.id})});'''
+
+          pattern = re.compile(r"app\.post\('/api/message-requests/:id/:action'.*?\}\);(?=\napp\.get\('/api/conversations')", re.S)
+          if not pattern.search(s):
+              raise SystemExit('Backend request-action route not found')
+          s = pattern.sub(new_action, s, count=1)
+
+          new_convos = r'''app.get('/api/conversations',auth,async(req,res)=>{const{data:members,error}=await db.from('conversation_members').select('conversation_id').eq('user_id',req.user.id);if(error)return res.status(500).json({error:error.message});const ids=(members||[]).map(x=>x.conversation_id);if(!ids.length)return res.json({conversations:[]});const{data:convos,error:ce}=await db.from('conversations').select('id,kind,title,updated_at').in('id',ids).order('updated_at',{ascending:false});if(ce)return res.status(500).json({error:ce.message});const out=[];for(const c of convos||[]){const{data:ms,error:me}=await db.from('conversation_members').select('user_id').eq('conversation_id',c.id).neq('user_id',req.user.id);if(me)return res.status(500).json({error:`Could not load conversation members: ${me.message}`});let other=null;const otherId=ms?.[0]?.user_id;if(otherId){const{data:p,error:pe}=await db.from('profiles').select('id,username,display_name,avatar_url').eq('id',otherId).maybeSingle();if(pe)return res.status(500).json({error:`Could not load conversation profile: ${pe.message}`});other=p||null}const{data:last,error:le}=await db.from('messages').select('body,type,created_at,sender_id,payload').eq('conversation_id',c.id).order('created_at',{ascending:false}).limit(1);if(le)return res.status(500).json({error:`Could not load last message: ${le.message}`});out.push({...c,other,last:last?.[0]||null,music:activeMusic.has(c.id)?{user_id:activeMusic.get(c.id).user_id}:null})}res.json({conversations:out})});'''
+          conv_pattern = re.compile(r"app\.get\('/api/conversations',auth,async\(req,res\)=>\{.*?\}\);(?=\nasync function requireMember)", re.S)
+          if not conv_pattern.search(s):
+              raise SystemExit('Backend conversations route not found')
+          s = conv_pattern.sub(new_convos, s, count=1)
+          backend.write_text(s)
+
+          f = frontend.read_text()
+
+          old_state = "[requests,setRequests]=useState([]),[panel,setPanel]"
+          new_state = "[requests,setRequests]=useState([]),[outgoingRequests,setOutgoingRequests]=useState([]),[panel,setPanel]"
+          if old_state in f and "[outgoingRequests,setOutgoingRequests]" not in f:
+              f = f.replace(old_state, new_state, 1)
+
+          old_api = "const api=async(path,opt={})=>{const r=await fetch(API+path,{...opt,headers:{Authorization:`Bearer ${token()}`,'Content-Type':'application/json',...(opt.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||`Request failed (${r.status})`);return j};"
+          new_api = "const api=async(path,opt={})=>{const r=await fetch(API+path,{...opt,headers:{Authorization:`Bearer ${token()}`,'Content-Type':'application/json',...(opt.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok){const err=new Error(j.error||`Request failed (${r.status})`);err.code=j.code;throw err}return j};"
+          if old_api in f:
+              f = f.replace(old_api, new_api, 1)
+
+          old_effect = "try{const x=await api('/api/message-requests');if(!dead)setRequests(x.requests||[])}catch(e){console.error('Requests load failed',e)}})();"
+          new_effect = "try{const x=await api('/api/message-requests');if(!dead)setRequests(x.requests||[])}catch(e){console.error('Requests load failed',e)}loadOutgoingRequests();})();"
+          if old_effect in f:
+              f = f.replace(old_effect, new_effect, 1)
+
+          loader_marker = "async function loadConversations(){"
+          loader = "async function loadOutgoingRequests(){try{const x=await api('/api/message-requests/outgoing');setOutgoingRequests(x.requests||[]);return x.requests||[]}catch(e){console.error('Outgoing requests load failed',e);return []}}"
+          if "async function loadOutgoingRequests()" not in f:
+              if loader_marker not in f:
+                  raise SystemExit('Frontend loader marker not found')
+              f = f.replace(loader_marker, loader + loader_marker, 1)
+
+          old_request = re.escape("async function requestUser(u){const initial=prompt(`Message to @${u.username} (optional):`)??'';try{await api('/api/message-requests',{method:'POST',body:JSON.stringify({recipient_id:u.id,initial_message:initial})});alert(`Request sent to @${u.username}.`);setSearch('');setUsers([])}catch(e){alert(e.message)}}")
+          request_re = re.compile(old_request)
+          new_request = """async function requestUser(u){const existingConversation=convos.find(c=>c.kind==='direct'&&c.other?.id===u.id);if(existingConversation){setActive(existingConversation);setSearch('');setUsers([]);return}const alreadySent=outgoingRequests.some(r=>r.recipient_id===u.id&&r.status==='pending');if(alreadySent){alert(`You already sent a message request to @${u.username}.`);return}const initial=prompt(`First message to @${u.username}:`);if(initial===null)return;const message=initial.trim();if(!message){alert('Your first message is required.');return}try{await api('/api/message-requests',{method:'POST',body:JSON.stringify({recipient_id:u.id,initial_message:message})});await loadOutgoingRequests();alert(`Message request sent to @${u.username}.`);setSearch('');setUsers([])}catch(e){if(e.code==='REQUEST_ALREADY_SENT'){await loadOutgoingRequests();alert(`You already sent a message request to @${u.username}.`);return}alert(e.message)}}"""
+          if request_re.search(f):
+              f = request_re.sub(new_request, f, count=1)
+
+          old_users = "{(users.length||searchError)&&<div className=\"user-results\">{searchError?<div className=\"search-error\">{searchError}</div>:users.length?users.map(u=><button key={u.id} onClick={()=>requestUser(u)}><Avatar p={u}/><span><b>@{u.username}</b><small>{u.display_name}</small></span><UserPlus/></button>):<div className=\"search-empty\">No matching usernames.</div>}</div>}"
+          new_users = "{(users.length||searchError)&&<div className=\"user-results\">{searchError?<div className=\"search-error\">{searchError}</div>:users.length?users.map(u=>{const alreadySent=outgoingRequests.some(r=>r.recipient_id===u.id&&r.status==='pending');const existingConversation=convos.some(c=>c.kind==='direct'&&c.other?.id===u.id);return <button key={u.id} onClick={()=>requestUser(u)} disabled={alreadySent} className={alreadySent?'request-sent':''}><Avatar p={u}/><span><b>@{u.username}</b><small>{u.display_name}</small></span>{existingConversation?<span className=\"search-action\">Open chat</span>:alreadySent?<span className=\"search-action\">✓ Request sent</span>:<UserPlus/>}</button>}):<div className=\"search-empty\">No matching usernames.</div>}</div>}"
+          if old_users in f:
+              f = f.replace(old_users, new_users, 1)
+
+          frontend.write_text(f)
+          PY
+
+      - name: Verify build-critical replacements
+        run: |
+          grep -q "message-requests/outgoing" backend/src/server.js
+          grep -q "REQUEST_ALREADY_SENT" backend/src/server.js
+          grep -q "Could not load conversation profile" backend/src/server.js
+          grep -q "outgoingRequests" frontend/src/main.jsx
+          grep -q "err.code=j.code" frontend/src/main.jsx
+          grep -q "Request sent" frontend/src/main.jsx
+
+      - name: Commit patched files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/src/server.js frontend/src/main.jsx
+          if git diff --cached --quiet; then
+            echo "No changes needed."
+            exit 0
+          fi
+          git commit -m "[frostlink-auto] Fix message request and conversation flow"
+          git push
