@@ -2,24 +2,10 @@ import { createClient } from '@supabase/supabase-js';
 import { io } from 'socket.io-client';
 
 const supabase=createClient(import.meta.env.VITE_SUPABASE_URL,import.meta.env.VITE_SUPABASE_ANON_KEY);
-let installed=false;
-let realtimeSocket=null;
-let conversations=[];
-let activeConversationId=null;
-let currentUserId=null;
-let typingTimer=null;
-let typingActive=false;
-let videoAsFile=false;
-let readInFlight=false;
-let observerTimer=null;
-let readStatusTimer=null;
-let readScrollCleanup=null;
-let readStatusDomFor='';
-const seenIncomingMessages=new Set();
-const unread=new Map();
+let installed=false,realtimeSocket=null,conversations=[],activeConversationId=null,currentUserId=null,typingTimer=null,typingActive=false,videoAsFile=false,readInFlight=false,observerTimer=null,readScrollCleanup=null;
+const seenIncomingMessages=new Set(),unread=new Map();
 const API=import.meta.env.VITE_API_URL||'http://localhost:3001';
-const UNREAD_KEY='frostlink:unread:v1';
-const READ_KEY='frostlink:mark-read:v1';
+const UNREAD_KEY='frostlink:unread:v1',READ_KEY='frostlink:mark-read:v1';
 try{const saved=JSON.parse(localStorage.getItem(UNREAD_KEY)||'{}');Object.entries(saved).forEach(([id,n])=>{if(Number(n)>0)unread.set(id,Number(n))})}catch{}
 function saveUnread(){localStorage.setItem(UNREAD_KEY,JSON.stringify(Object.fromEntries(unread)))}
 function shouldMarkRead(id){try{const x=JSON.parse(localStorage.getItem(READ_KEY)||'{}');return x[id]!==false}catch{return true}}
@@ -29,141 +15,63 @@ function unreadFor(id){return unread.get(id)||0}
 function setUnread(id,n){if(n>0)unread.set(id,n);else unread.delete(id);saveUnread();renderUnread();updateLatest()}
 function incrementUnread(id){setUnread(id,unreadFor(id)+1)}
 function clearUnread(id){setUnread(id,0)}
-
 async function token(){try{const {data}=await supabase.auth.getSession();currentUserId=data.session?.user?.id||null;return data.session?.access_token||''}catch{return ''}}
 async function api(path,opt={}){const t=await token();return fetch(API+path,{...opt,headers:{Authorization:`Bearer ${t}`,'Content-Type':'application/json',...(opt.headers||{})}})}
 function getMessageScroller(){return document.querySelector('.messages')}
 function isNearBottom(){const e=getMessageScroller();return Boolean(e&&e.scrollHeight-e.scrollTop-e.clientHeight<180)}
-function installReadTracking(){
-  const el=getMessageScroller();
-  if(!el)return;
-  if(el.dataset.frostReadTracking==='1')return;
-  el.dataset.frostReadTracking='1';
-  const onScroll=()=>{if(activeConversationId&&shouldMarkRead(activeConversationId)&&isNearBottom())markIncomingRead()};
-  el.addEventListener('scroll',onScroll,{passive:true});
-  readScrollCleanup=()=>{el.removeEventListener('scroll',onScroll);if(el.dataset.frostReadTracking==='1')delete el.dataset.frostReadTracking};
-  setTimeout(markIncomingRead,80);
+
+async function syncMessageDom(){
+  if(!activeConversationId)return;
+  try{
+    const r=await api(`/api/conversations/${encodeURIComponent(activeConversationId)}/messages`);const j=await r.json().catch(()=>({}));if(!r.ok)return;
+    const list=Array.isArray(j.messages)?j.messages:[];
+    const els=[...document.querySelectorAll('.messages .msg')];
+    const start=Math.max(0,list.length-els.length);
+    els.forEach((el,i)=>{const m=list[start+i];if(!m?.id)return;el.dataset.messageId=String(m.id);el.classList.toggle('mine',m.sender_id===currentUserId);el.classList.toggle('theirs',m.sender_id!==currentUserId);if(m.sender_id===currentUserId)addReadStatus(m.id,false)});
+    if(shouldMarkRead(activeConversationId))setTimeout(markIncomingRead,30);
+  }catch(e){console.warn('Message DOM sync failed:',e.message)}
 }
+function installReadTracking(){const el=getMessageScroller();if(!el)return;if(el.dataset.frostReadTracking==='1')return;el.dataset.frostReadTracking='1';const onScroll=()=>{if(activeConversationId&&shouldMarkRead(activeConversationId)&&isNearBottom())markIncomingRead()};el.addEventListener('scroll',onScroll,{passive:true});readScrollCleanup=()=>{el.removeEventListener('scroll',onScroll);if(el.dataset.frostReadTracking==='1')delete el.dataset.frostReadTracking};setTimeout(()=>{syncMessageDom()},80)}
 function resolveActive(){
   const small=document.querySelector('.chat-head small');
   const username=String(small?.textContent||'').trim().replace(/^@/,'');
   const c=conversations.find(x=>x.other?.username===username);
-  if(c&&c.id!==activeConversationId){
-    if(activeConversationId&&realtimeSocket)realtimeSocket.emit('leave-conversation',activeConversationId);
-    if(readScrollCleanup)readScrollCleanup();
-    if(readStatusTimer)clearInterval(readStatusTimer);
-    activeConversationId=c.id;
-    readStatusDomFor='';
-    if(realtimeSocket?.connected)realtimeSocket.emit('join-conversation',c.id);
-    loadSentReadStatus(c.id);
-    readStatusTimer=setInterval(()=>loadSentReadStatus(c.id),2500);
-    if(shouldMarkRead(c.id))setTimeout(markIncomingRead,120);
-  }
+  if(c&&c.id!==activeConversationId){if(activeConversationId&&realtimeSocket)realtimeSocket.emit('leave-conversation',activeConversationId);if(readScrollCleanup)readScrollCleanup();activeConversationId=c.id;if(realtimeSocket?.connected)realtimeSocket.emit('join-conversation',c.id);if(shouldMarkRead(c.id))setTimeout(()=>syncMessageDom(),120)}
 }
 function renderUnread(){
   const buttons=[...document.querySelectorAll('.conversation-list .conversation:not(.request-conversation)')];
   const chats=conversations.slice(0,buttons.length);
-  buttons.forEach((b,i)=>{
-    const n=chats[i]?unreadFor(chats[i].id):0;
-    let badge=b.querySelector('.frost-unread-badge');
-    if(!badge){badge=document.createElement('em');badge.className='frost-unread-badge';b.appendChild(badge)}
-    badge.textContent=n>0?String(n):'';
-    badge.hidden=n<1;
-    b.classList.toggle('has-unread',n>0);
-  });
-  const count=unreadTotal();
-  document.title=count>0?`(${count}) Frostlink`:'Frostlink';
+  buttons.forEach((b,i)=>{const n=chats[i]?unreadFor(chats[i].id):0;let badge=b.querySelector('.frost-unread-badge');if(!badge){badge=document.createElement('em');badge.className='frost-unread-badge';b.appendChild(badge)}badge.textContent=n>0?String(n):'';badge.hidden=n<1;b.classList.toggle('has-unread',n>0)});
+  const count=unreadTotal();document.title=count>0?`(${count}) Frostlink`:'Frostlink';
 }
-function updateLatest(){
-  const btn=document.querySelector('.latest');
-  if(!btn)return;
-  const n=unreadFor(activeConversationId);
-  btn.textContent=`↓ ${n} ${n===1?'message':'messages'}`;
-}
+function updateLatest(){const btn=document.querySelector('.latest');if(!btn)return;const n=unreadFor(activeConversationId);btn.textContent=`↓ ${n} ${n===1?'message':'messages'}`;btn.hidden=n<1}
 function addTypingUi(){
-  if(document.getElementById('frost-typing-indicator'))return;
-  const chat=document.querySelector('.chat');if(!chat)return;
-  const el=document.createElement('div');el.id='frost-typing-indicator';el.className='frost-typing-indicator';el.setAttribute('aria-live','polite');chat.appendChild(el);
+  if(document.getElementById('frost-typing-indicator'))return;const chat=document.querySelector('.chat');if(!chat)return;const el=document.createElement('div');el.id='frost-typing-indicator';el.className='frost-typing-indicator';el.setAttribute('aria-live','polite');chat.appendChild(el);
   const style=document.createElement('style');style.textContent=`#frost-typing-indicator{position:absolute;left:18px;bottom:82px;z-index:8;min-height:20px;padding:5px 10px;border-radius:999px;background:rgba(8,16,30,.78);backdrop-filter:blur(10px);color:#bfe9ff;font-size:12px;pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .16s,transform .16s}.frost-typing-indicator.show{opacity:1;transform:none}.frost-read-status{margin-left:6px;font-size:11px;letter-spacing:.02em;color:#79b9ff}.frost-read-status.read{color:#56efbd}.frost-video-mode{display:inline-flex!important;align-items:center;justify-content:center;gap:4px;min-width:34px}.frost-video-mode.active{color:#56efbd!important}.frost-video-mode svg{display:none!important}.frost-unread-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#56efbd;color:#06131b;font-size:11px;font-style:normal;font-weight:800}.conversation.has-unread .conv-copy b{font-weight:800}.frost-read-toggle{font-size:11px!important;padding:5px 8px!important;border-radius:999px!important}.frost-read-toggle.off{opacity:.7}`;document.head.appendChild(style)
 }
 function setTyping(text){const el=document.getElementById('frost-typing-indicator');if(!el)return;el.textContent=text||'';el.classList.toggle('show',Boolean(text))}
-function addReadStatus(msgId,read=true){
-  const el=document.querySelector(`.msg.mine[data-message-id="${CSS.escape(msgId)}"]`);if(!el)return;
-  let status=el.querySelector('.frost-read-status');
-  if(!status){status=document.createElement('span');status.className='frost-read-status';const host=el.querySelector('.meta')||el;host.appendChild(status)}
-  status.textContent=read?'✓✓':'✓';status.title=read?'Read':'Sent';status.classList.toggle('read',read);
-}
-async function loadSentReadStatus(id){
-  if(!id)return;
-  try{const r=await api(`/api/messages/read-status?conversation_id=${encodeURIComponent(id)}`);const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Request failed (${r.status})`);const ids=new Set(j.message_ids||[]);document.querySelectorAll('.msg.mine[data-message-id]').forEach(el=>addReadStatus(el.dataset.messageId,ids.has(el.dataset.messageId)))}catch(e){console.warn('Read status load failed:',e.message)}
-}
+function addReadStatus(msgId,read=false){const el=document.querySelector(`.msg.mine[data-message-id="${CSS.escape(String(msgId))}"]`);if(!el)return;let status=el.querySelector('.frost-read-status');if(!status){status=document.createElement('span');status.className='frost-read-status';const host=el.querySelector('.meta')||el;host.appendChild(status)}status.textContent=read?'✓✓':'✓';status.title=read?'Read':'Sent';status.classList.toggle('read',read)}
 async function markIncomingRead(){
   if(readInFlight||!activeConversationId||!shouldMarkRead(activeConversationId))return;
-  const incoming=[...document.querySelectorAll(`.msg.theirs[data-message-id]:not([data-frost-read])`)].map(el=>{el.dataset.frostRead='1';return el.dataset.messageId}).filter(Boolean);
+  await syncMessageDomIdsOnly();
+  const incoming=[...document.querySelectorAll('.messages .msg.theirs[data-message-id]:not([data-frost-read])')].map(el=>{el.dataset.frostRead='1';return el.dataset.messageId}).filter(Boolean);
   if(!incoming.length)return;
-  readInFlight=true;
-  let marked=0;
-  try{
-    await Promise.all(incoming.map(id=>api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'}).then(async r=>{if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||`Request failed (${r.status})`);marked+=1}).catch(e=>{const el=document.querySelector(`.msg.theirs[data-message-id="${CSS.escape(id)}"]`);if(el)delete el.dataset.frostRead;console.warn('Mark read failed:',e.message)})));
-    if(marked>0){clearUnread(activeConversationId);loadSentReadStatus(activeConversationId)}
-  }finally{readInFlight=false}
+  readInFlight=true;let marked=0;
+  try{await Promise.all(incoming.map(id=>api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'}).then(async r=>{if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||`Request failed (${r.status})`);marked++}).catch(e=>{const el=document.querySelector(`.msg.theirs[data-message-id="${CSS.escape(String(id))}"]`);if(el)delete el.dataset.frostRead;console.warn('Mark read failed:',e.message)})));if(marked>0)clearUnread(activeConversationId)}finally{readInFlight=false}
 }
+async function syncMessageDomIdsOnly(){
+  if(!activeConversationId)return;try{const r=await api(`/api/conversations/${encodeURIComponent(activeConversationId)}/messages`);const j=await r.json().catch(()=>({}));if(!r.ok)return;const list=Array.isArray(j.messages)?j.messages:[],els=[...document.querySelectorAll('.messages .msg')],start=Math.max(0,list.length-els.length);els.forEach((el,i)=>{const m=list[start+i];if(m?.id){el.dataset.messageId=String(m.id);el.classList.toggle('mine',m.sender_id===currentUserId);el.classList.toggle('theirs',m.sender_id!==currentUserId)}})}catch{}}
 function renderReadToggle(){
-  const actions=document.querySelector('.chat-head .chat-actions');if(!actions||!activeConversationId)return;
-  let btn=actions.querySelector('.frost-read-toggle');
-  if(!btn){btn=document.createElement('button');btn.className='frost-read-toggle';actions.appendChild(btn);btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();const next=!shouldMarkRead(activeConversationId);setMarkRead(activeConversationId,next);updateReadToggle();if(next){markIncomingRead()}})}
-  updateReadToggle();
+  if(!activeConversationId)return;const host=document.querySelector('.chat-head .chat-actions')||document.querySelector('.chat-head');if(!host)return;let btn=host.querySelector('.frost-read-toggle');
+  if(!btn){btn=document.createElement('button');btn.className='frost-read-toggle';host.appendChild(btn);btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();const next=!shouldMarkRead(activeConversationId);setMarkRead(activeConversationId,next);updateReadToggle();if(next)syncMessageDom()})}updateReadToggle()
 }
-function updateReadToggle(){
-  const btn=document.querySelector('.chat-head .frost-read-toggle');if(!btn)return;
-  const on=shouldMarkRead(activeConversationId);btn.textContent=on?'✓ Read on':'◌ Don’t mark read';btn.classList.toggle('off',!on);btn.title=on?'Opening this chat marks all loaded incoming messages read':'Incoming messages stay unread until you turn read marking back on';btn.setAttribute('aria-pressed',String(on));
-}
-function installTyping(){
-  const input=document.querySelector('.composer input,.composer textarea');if(!input||input.dataset.frostTyping)return;
-  input.dataset.frostTyping='1';
-  const emitStart=()=>{if(!activeConversationId||!realtimeSocket?.connected)return;if(!typingActive){typingActive=true;realtimeSocket.emit('typing:start',activeConversationId)}clearTimeout(typingTimer);typingTimer=setTimeout(emitStop,900)};
-  const emitStop=()=>{clearTimeout(typingTimer);if(typingActive&&realtimeSocket?.connected)realtimeSocket.emit('typing:stop',activeConversationId);typingActive=false};
-  input.addEventListener('input',()=>{if(!input.disabled)emitStart()});input.addEventListener('blur',emitStop);window.addEventListener('beforeunload',emitStop);
-}
-function installMediaMode(){
-  const btn=[...document.querySelectorAll('.composer button')].find(b=>b.getAttribute('title')==='Embed');
-  if(btn&&!btn.dataset.frostMediaMode){
-    btn.dataset.frostMediaMode='1';btn.classList.add('frost-video-mode');btn.setAttribute('title','Send video as a file');btn.setAttribute('aria-label','Send video as a file');btn.innerHTML='✓';
-    btn.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();e.stopPropagation();videoAsFile=!videoAsFile;window.__frostVideoAsFile=videoAsFile;btn.classList.toggle('active',videoAsFile);btn.setAttribute('aria-pressed',String(videoAsFile));btn.setAttribute('title',videoAsFile?'Video will send as a file':'Video will send as playable media')},true);
-  }
-}
+function updateReadToggle(){const btn=document.querySelector('.chat-head .frost-read-toggle');if(!btn)return;const on=shouldMarkRead(activeConversationId);btn.textContent=on?'✓ Read on':'◌ Don’t mark read';btn.classList.toggle('off',!on);btn.title=on?'Opening this chat marks its incoming messages read':'Incoming messages stay unread';btn.setAttribute('aria-pressed',String(on))}
+function installTyping(){const input=document.querySelector('.composer input,.composer textarea');if(!input||input.dataset.frostTyping)return;input.dataset.frostTyping='1';const emitStart=()=>{if(!activeConversationId||!realtimeSocket?.connected)return;if(!typingActive){typingActive=true;realtimeSocket.emit('typing:start',activeConversationId)}clearTimeout(typingTimer);typingTimer=setTimeout(emitStop,900)};const emitStop=()=>{clearTimeout(typingTimer);if(typingActive&&realtimeSocket?.connected)realtimeSocket.emit('typing:stop',activeConversationId);typingActive=false};input.addEventListener('input',()=>{if(!input.disabled)emitStart()});input.addEventListener('blur',emitStop);window.addEventListener('beforeunload',emitStop)}
+function installMediaMode(){const btn=[...document.querySelectorAll('.composer button')].find(b=>b.getAttribute('title')==='Embed');if(btn&&!btn.dataset.frostMediaMode){btn.dataset.frostMediaMode='1';btn.classList.add('frost-video-mode');btn.setAttribute('title','Send video as a file');btn.setAttribute('aria-label','Send video as a file');btn.innerHTML='✓';btn.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();e.stopPropagation();videoAsFile=!videoAsFile;window.__frostVideoAsFile=videoAsFile;btn.classList.toggle('active',videoAsFile);btn.setAttribute('aria-pressed',String(videoAsFile));btn.setAttribute('title',videoAsFile?'Video will send as a file':'Video will send as playable media')},true)}}
 const directVideo=/^https?:\/\/\S+\.(?:mp4|webm|mov|m4v|ogv)(?:[?#].*)?$/i;
-function installFetchMode(){
-  if(window.__frostFetchWrapped)return;window.__frostFetchWrapped=true;
-  const nativeFetch=window.fetch.bind(window);
-  window.fetch=async function(resource,options){
-    const url=typeof resource==='string'?resource:resource?.url||'';
-    if(/\/api\/conversations\/[^/]+\/messages$/.test(url)&&options?.method?.toUpperCase()==='POST'&&typeof options.body==='string'){
-      try{
-        const body=JSON.parse(options.body);
-        if(body.type==='text'&&directVideo.test(String(body.body||'').trim())){const videoUrl=String(body.body).trim();body.type=window.__frostVideoAsFile?'file':'video';body.body=null;body.payload={...(body.payload||{}),url:videoUrl,mime:'video/*',name:videoUrl.split('/').pop().split(/[?#]/)[0]||'video'};options={...options,body:JSON.stringify(body)}}
-        else if(window.__frostVideoAsFile&&body.type==='video'){body.type='file';body.payload={...(body.payload||{}),sendAsFile:true};options={...options,body:JSON.stringify(body)}}
-        if(window.__frostVideoAsFile){window.__frostVideoAsFile=false;videoAsFile=false;const toggle=[...document.querySelectorAll('.composer button')].find(b=>b.dataset.frostMediaMode);toggle?.classList.remove('active');toggle?.setAttribute('aria-pressed','false')}
-      }catch{}
-    }
-    return nativeFetch(resource,options)
-  }
-}
-function installSocket(){
-  if(realtimeSocket)return;
-  token().then(t=>{if(!t)return;realtimeSocket=io(API,{auth:{accessToken:t},transports:['websocket','polling'],reconnection:true});
-    realtimeSocket.auth.userId=currentUserId;
-    realtimeSocket.on('connect',()=>{realtimeSocket.auth.userId=currentUserId;resolveActive();if(activeConversationId)realtimeSocket.emit('join-conversation',activeConversationId)});
-    const handleTyping=x=>{if(x?.conversation_id===activeConversationId&&x.user_id!==currentUserId)setTyping(x.active?`${x.sender||'Someone'} is typing…`:'')};
-    realtimeSocket.on('typing',handleTyping);realtimeSocket.on('typing:start',x=>handleTyping({...x,active:true}));realtimeSocket.on('typing:stop',x=>handleTyping({...x,active:false}));
-    realtimeSocket.on('message:read',x=>{if(x?.message_id&&x.user_id!==currentUserId)addReadStatus(x.message_id,true)});
-    realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId||!m.id)return;if(seenIncomingMessages.has(m.id))return;seenIncomingMessages.add(m.id);if(seenIncomingMessages.size>1000)seenIncomingMessages.delete(seenIncomingMessages.values().next().value);incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId))setTimeout(markIncomingRead,120)});
-  }).catch(()=>{});
-}
+function installFetchMode(){if(window.__frostFetchWrapped)return;window.__frostFetchWrapped=true;const nativeFetch=window.fetch.bind(window);window.fetch=async function(resource,options){const url=typeof resource==='string'?resource:resource?.url||'';if(/\/api\/conversations\/[^/]+\/messages$/.test(url)&&options?.method?.toUpperCase()==='POST'&&typeof options.body==='string'){try{const body=JSON.parse(options.body);if(body.type==='text'&&directVideo.test(String(body.body||'').trim())){const videoUrl=String(body.body).trim();body.type=window.__frostVideoAsFile?'file':'video';body.body=null;body.payload={...(body.payload||{}),url:videoUrl,mime:'video/*',name:videoUrl.split('/').pop().split(/[?#]/)[0]||'video'};options={...options,body:JSON.stringify(body)}}else if(window.__frostVideoAsFile&&body.type==='video'){body.type='file';body.payload={...(body.payload||{}),sendAsFile:true};options={...options,body:JSON.stringify(body)}}if(window.__frostVideoAsFile){window.__frostVideoAsFile=false;videoAsFile=false;const toggle=[...document.querySelectorAll('.composer button')].find(b=>b.dataset.frostMediaMode);toggle?.classList.remove('active');toggle?.setAttribute('aria-pressed','false')}}catch{}}return nativeFetch(resource,options)}}
+function installSocket(){if(realtimeSocket)return;token().then(t=>{if(!t)return;realtimeSocket=io(API,{auth:{accessToken:t},transports:['websocket','polling'],reconnection:true});realtimeSocket.on('connect',()=>{resolveActive();if(activeConversationId)realtimeSocket.emit('join-conversation',activeConversationId)});const handleTyping=x=>{if(x?.conversation_id===activeConversationId&&x.user_id!==currentUserId)setTyping(x.active?`${x.sender||'Someone'} is typing…`:'')};realtimeSocket.on('typing',handleTyping);realtimeSocket.on('typing:start',x=>handleTyping({...x,active:true}));realtimeSocket.on('typing:stop',x=>handleTyping({...x,active:false}));realtimeSocket.on('message:read',x=>{if(x?.message_id&&x.user_id!==currentUserId)addReadStatus(x.message_id,true)});realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId||!m.id)return;if(seenIncomingMessages.has(m.id))return;seenIncomingMessages.add(m.id);if(seenIncomingMessages.size>1000)seenIncomingMessages.delete(seenIncomingMessages.values().next().value);incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId))setTimeout(()=>syncMessageDom(),120)})}).catch(()=>{})}
 function persistTheme(){const app=document.querySelector('.app');if(!app)return;const saved=localStorage.getItem('frostlink-theme-bg');if(saved){app.classList.remove('bg-aurora','bg-midnight','bg-ice');app.classList.add('bg-'+saved)}if(installed)return;installed=true;new MutationObserver(()=>{const cls=[...app.classList].find(x=>x.startsWith('bg-'));if(cls)localStorage.setItem('frostlink-theme-bg',cls.slice(3))}).observe(app,{attributes:true,attributeFilter:['class']})}
-function boot(){
-  const wait=()=>{if(document.querySelector('.app')){persistTheme();addTypingUi();installSocket();installTyping();installMediaMode();installFetchMode();loadConversations();resolveActive();installReadTracking();renderReadToggle()}else setTimeout(wait,250)};wait();
-  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&readStatusDomFor!==activeConversationId&&getMessageScroller()){readStatusDomFor=activeConversationId;loadSentReadStatus(activeConversationId)}},150)});
-  observer.observe(document.body,{childList:true,subtree:true});
-}
+function boot(){const wait=()=>{if(document.querySelector('.app')){persistTheme();addTypingUi();installSocket();installTyping();installMediaMode();installFetchMode();loadConversations();resolveActive();installReadTracking();renderReadToggle()}else setTimeout(wait,250)};wait();const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&getMessageScroller())syncMessageDom()},150)});observer.observe(document.body,{childList:true,subtree:true})}
+async function loadConversations(){try{const r=await api('/api/conversations');const j=await r.json().catch(()=>({}));conversations=j.conversations||[];renderUnread()}catch(e){console.warn('Conversation load failed:',e.message)}}
 boot();
