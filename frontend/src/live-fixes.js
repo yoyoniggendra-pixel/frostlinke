@@ -14,6 +14,7 @@ let readInFlight=false;
 let observerTimer=null;
 let readStatusTimer=null;
 let readScrollCleanup=null;
+let readStatusDomFor='';
 const seenIncomingMessages=new Set();
 const unread=new Map();
 const API=import.meta.env.VITE_API_URL||'http://localhost:3001';
@@ -52,8 +53,8 @@ function resolveActive(){
     if(readScrollCleanup)readScrollCleanup();
     if(readStatusTimer)clearInterval(readStatusTimer);
     activeConversationId=c.id;
+    readStatusDomFor='';
     if(realtimeSocket?.connected)realtimeSocket.emit('join-conversation',c.id);
-    installReadTracking();
     loadSentReadStatus(c.id);
     readStatusTimer=setInterval(()=>loadSentReadStatus(c.id),2500);
   }
@@ -157,7 +158,7 @@ function installSocket(){
 function persistTheme(){const app=document.querySelector('.app');if(!app)return;const saved=localStorage.getItem('frostlink-theme-bg');if(saved){app.classList.remove('bg-aurora','bg-midnight','bg-ice');app.classList.add('bg-'+saved)}if(installed)return;installed=true;new MutationObserver(()=>{const cls=[...app.classList].find(x=>x.startsWith('bg-'));if(cls)localStorage.setItem('frostlink-theme-bg',cls.slice(3))}).observe(app,{attributes:true,attributeFilter:['class']})}
 function boot(){
   const wait=()=>{if(document.querySelector('.app')){persistTheme();addTypingUi();installSocket();installTyping();installMediaMode();installFetchMode();loadConversations();resolveActive();installReadTracking();renderReadToggle()}else setTimeout(wait,250)};wait();
-  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&isNearBottom())markIncomingRead();if(activeConversationId)loadSentReadStatus(activeConversationId)},150)});
+  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&isNearBottom())markIncomingRead();if(activeConversationId&&readStatusDomFor!==activeConversationId&&getMessageScroller()){readStatusDomFor=activeConversationId;loadSentReadStatus(activeConversationId)}},150)});
   observer.observe(document.body,{childList:true,subtree:true});
 }
 boot();
