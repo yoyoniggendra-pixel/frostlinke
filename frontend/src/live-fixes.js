@@ -39,10 +39,10 @@ function installReadTracking(){
   if(!el)return;
   if(el.dataset.frostReadTracking==='1')return;
   el.dataset.frostReadTracking='1';
-  const onScroll=()=>{if(activeConversationId&&isNearBottom()){clearUnread(activeConversationId);markIncomingRead()}};
+  const onScroll=()=>{if(activeConversationId&&shouldMarkRead(activeConversationId)&&isNearBottom())markIncomingRead()};
   el.addEventListener('scroll',onScroll,{passive:true});
   readScrollCleanup=()=>{el.removeEventListener('scroll',onScroll);if(el.dataset.frostReadTracking==='1')delete el.dataset.frostReadTracking};
-  if(isNearBottom())setTimeout(markIncomingRead,80);
+  setTimeout(markIncomingRead,80);
 }
 function resolveActive(){
   const small=document.querySelector('.chat-head small');
@@ -57,6 +57,7 @@ function resolveActive(){
     if(realtimeSocket?.connected)realtimeSocket.emit('join-conversation',c.id);
     loadSentReadStatus(c.id);
     readStatusTimer=setInterval(()=>loadSentReadStatus(c.id),2500);
+    if(shouldMarkRead(c.id))setTimeout(markIncomingRead,120);
   }
 }
 function renderUnread(){
@@ -89,7 +90,7 @@ function setTyping(text){const el=document.getElementById('frost-typing-indicato
 function addReadStatus(msgId,read=true){
   const el=document.querySelector(`.msg.mine[data-message-id="${CSS.escape(msgId)}"]`);if(!el)return;
   let status=el.querySelector('.frost-read-status');
-  if(!status){status=document.createElement('span');status.className='frost-read-status';el.querySelector('.meta')?.appendChild(status)}
+  if(!status){status=document.createElement('span');status.className='frost-read-status';const host=el.querySelector('.meta')||el;host.appendChild(status)}
   status.textContent=read?'✓✓':'✓';status.title=read?'Read':'Sent';status.classList.toggle('read',read);
 }
 async function loadSentReadStatus(id){
@@ -97,21 +98,25 @@ async function loadSentReadStatus(id){
   try{const r=await api(`/api/messages/read-status?conversation_id=${encodeURIComponent(id)}`);const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Request failed (${r.status})`);const ids=new Set(j.message_ids||[]);document.querySelectorAll('.msg.mine[data-message-id]').forEach(el=>addReadStatus(el.dataset.messageId,ids.has(el.dataset.messageId)))}catch(e){console.warn('Read status load failed:',e.message)}
 }
 async function markIncomingRead(){
-  if(readInFlight||!activeConversationId||!shouldMarkRead(activeConversationId)||!isNearBottom())return;
+  if(readInFlight||!activeConversationId||!shouldMarkRead(activeConversationId))return;
   const incoming=[...document.querySelectorAll(`.msg.theirs[data-message-id]:not([data-frost-read])`)].map(el=>{el.dataset.frostRead='1';return el.dataset.messageId}).filter(Boolean);
-  if(!incoming.length){clearUnread(activeConversationId);return}
+  if(!incoming.length)return;
   readInFlight=true;
-  try{await Promise.all(incoming.map(id=>api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'}).then(async r=>{if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||`Request failed (${r.status})`)}).catch(e=>{const el=document.querySelector(`.msg.theirs[data-message-id="${CSS.escape(id)}"]`);if(el)delete el.dataset.frostRead;console.warn('Mark read failed:',e.message)})));clearUnread(activeConversationId);loadSentReadStatus(activeConversationId)}finally{readInFlight=false}
+  let marked=0;
+  try{
+    await Promise.all(incoming.map(id=>api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'}).then(async r=>{if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||`Request failed (${r.status})`);marked+=1}).catch(e=>{const el=document.querySelector(`.msg.theirs[data-message-id="${CSS.escape(id)}"]`);if(el)delete el.dataset.frostRead;console.warn('Mark read failed:',e.message)})));
+    if(marked>0){clearUnread(activeConversationId);loadSentReadStatus(activeConversationId)}
+  }finally{readInFlight=false}
 }
 function renderReadToggle(){
   const actions=document.querySelector('.chat-head .chat-actions');if(!actions||!activeConversationId)return;
   let btn=actions.querySelector('.frost-read-toggle');
-  if(!btn){btn=document.createElement('button');btn.className='frost-read-toggle';actions.appendChild(btn);btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();const next=!shouldMarkRead(activeConversationId);setMarkRead(activeConversationId,next);updateReadToggle();if(next&&isNearBottom()){clearUnread(activeConversationId);markIncomingRead()}})}
+  if(!btn){btn=document.createElement('button');btn.className='frost-read-toggle';actions.appendChild(btn);btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();const next=!shouldMarkRead(activeConversationId);setMarkRead(activeConversationId,next);updateReadToggle();if(next){markIncomingRead()}})}
   updateReadToggle();
 }
 function updateReadToggle(){
   const btn=document.querySelector('.chat-head .frost-read-toggle');if(!btn)return;
-  const on=shouldMarkRead(activeConversationId);btn.textContent=on?'✓ Read on':'◌ Don’t mark read';btn.classList.toggle('off',!on);btn.title=on?'Incoming messages are marked read only when you reach the bottom':'Incoming messages stay unread until you turn read marking back on';btn.setAttribute('aria-pressed',String(on));
+  const on=shouldMarkRead(activeConversationId);btn.textContent=on?'✓ Read on':'◌ Don’t mark read';btn.classList.toggle('off',!on);btn.title=on?'Opening this chat marks all loaded incoming messages read':'Incoming messages stay unread until you turn read marking back on';btn.setAttribute('aria-pressed',String(on));
 }
 function installTyping(){
   const input=document.querySelector('.composer input,.composer textarea');if(!input||input.dataset.frostTyping)return;
@@ -152,13 +157,13 @@ function installSocket(){
     const handleTyping=x=>{if(x?.conversation_id===activeConversationId&&x.user_id!==currentUserId)setTyping(x.active?`${x.sender||'Someone'} is typing…`:'')};
     realtimeSocket.on('typing',handleTyping);realtimeSocket.on('typing:start',x=>handleTyping({...x,active:true}));realtimeSocket.on('typing:stop',x=>handleTyping({...x,active:false}));
     realtimeSocket.on('message:read',x=>{if(x?.message_id&&x.user_id!==currentUserId)addReadStatus(x.message_id,true)});
-    realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId||!m.id)return;if(seenIncomingMessages.has(m.id))return;seenIncomingMessages.add(m.id);if(seenIncomingMessages.size>1000)seenIncomingMessages.delete(seenIncomingMessages.values().next().value);incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId)&&isNearBottom())setTimeout(markIncomingRead,120)});
+    realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId||!m.id)return;if(seenIncomingMessages.has(m.id))return;seenIncomingMessages.add(m.id);if(seenIncomingMessages.size>1000)seenIncomingMessages.delete(seenIncomingMessages.values().next().value);incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId))setTimeout(markIncomingRead,120)});
   }).catch(()=>{});
 }
 function persistTheme(){const app=document.querySelector('.app');if(!app)return;const saved=localStorage.getItem('frostlink-theme-bg');if(saved){app.classList.remove('bg-aurora','bg-midnight','bg-ice');app.classList.add('bg-'+saved)}if(installed)return;installed=true;new MutationObserver(()=>{const cls=[...app.classList].find(x=>x.startsWith('bg-'));if(cls)localStorage.setItem('frostlink-theme-bg',cls.slice(3))}).observe(app,{attributes:true,attributeFilter:['class']})}
 function boot(){
   const wait=()=>{if(document.querySelector('.app')){persistTheme();addTypingUi();installSocket();installTyping();installMediaMode();installFetchMode();loadConversations();resolveActive();installReadTracking();renderReadToggle()}else setTimeout(wait,250)};wait();
-  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&isNearBottom())markIncomingRead();if(activeConversationId&&readStatusDomFor!==activeConversationId&&getMessageScroller()){readStatusDomFor=activeConversationId;loadSentReadStatus(activeConversationId)}},150)});
+  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();installReadTracking();renderReadToggle();renderUnread();if(activeConversationId&&readStatusDomFor!==activeConversationId&&getMessageScroller()){readStatusDomFor=activeConversationId;loadSentReadStatus(activeConversationId)}},150)});
   observer.observe(document.body,{childList:true,subtree:true});
 }
 boot();
