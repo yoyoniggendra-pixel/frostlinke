@@ -50,10 +50,16 @@ function normalizeEmbedIframe(iframe){
   if(host==='youtube.com'||host==='m.youtube.com'||host==='youtube-nocookie.com'){
    if(u.pathname==='/watch')id=u.searchParams.get('v')||'';
    else{const p=u.pathname.split('/').filter(Boolean);if(p[0]==='embed'||p[0]==='shorts')id=p[1]||'';}
-   if(id)iframe.src=`https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&modestbranding=1&playsinline=1`;
+   if(id){
+    const desired=`https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&modestbranding=1&playsinline=1`;
+    if(iframe.src!==desired)iframe.src=desired;
+   }
   }else if(host==='youtu.be'){
    id=u.pathname.split('/').filter(Boolean)[0]||'';
-   if(id)iframe.src=`https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&modestbranding=1&playsinline=1`;
+   if(id){
+    const desired=`https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&modestbranding=1&playsinline=1`;
+    if(iframe.src!==desired)iframe.src=desired;
+   }
   }
  }catch{}
  iframe.style.opacity='1';
