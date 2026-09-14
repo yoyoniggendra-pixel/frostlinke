@@ -1,15 +1,7 @@
 /* FROSTLINK mobile navigation. UI-only: does not touch sockets, messages, or send logic. */
 (function(){
-  const MOBILE='(max-width: 760px)';
+  const MOBILE='(max-width:760px)';
   const isMobile=()=>window.matchMedia(MOBILE).matches;
-  let workspace=null;
-  let sidebar=null;
-  let chat=null;
-  let menu=null;
-  let back=null;
-  let close=null;
-  let shade=null;
-  let bound=false;
 
   function ensureButton(parent,selector,props){
     let el=parent.querySelector(selector);
@@ -28,71 +20,60 @@
     return el;
   }
 
-  function sync(){
-    if(!workspace||!sidebar||!chat||!menu||!back||!close||!shade)return;
-    const mobile=isMobile();
-    const open=workspace.classList.contains('mobile-sidebar-open');
-    if(!mobile)workspace.classList.remove('mobile-sidebar-open');
-    const actualOpen=mobile&&open;
-    menu.hidden=!mobile||actualOpen;
-    back.hidden=!mobile||actualOpen;
-    close.hidden=!mobile||!actualOpen;
-    shade.hidden=!mobile||!actualOpen;
-    sidebar.setAttribute('aria-hidden',mobile&&!actualOpen?'true':'false');
-    if(mobile){
-      sidebar.setAttribute('role','navigation');
-      sidebar.setAttribute('aria-label','Chats and username search');
-    }else sidebar.removeAttribute('aria-hidden');
-  }
-
-  function setOpen(open){
-    if(!workspace)return;
-    if(!isMobile()){
-      workspace.classList.remove('mobile-sidebar-open');
-      sync();
-      return;
-    }
-    workspace.classList.toggle('mobile-sidebar-open',!!open);
-    try{sessionStorage.setItem('frostlink-mobile-sidebar-open',open?'1':'0')}catch{}
-    sync();
-  }
-
   function setup(){
-    const nextWorkspace=document.querySelector('.workspace');
-    const nextSidebar=nextWorkspace?.querySelector('.sidebar');
-    const nextChat=nextWorkspace?.querySelector('.chat');
-    if(!nextWorkspace||!nextSidebar||!nextChat)return;
-
-    workspace=nextWorkspace;
-    sidebar=nextSidebar;
-    chat=nextChat;
+    const workspace=document.querySelector('.workspace');
+    const sidebar=workspace?.querySelector('.sidebar');
+    const chat=workspace?.querySelector('.chat');
+    if(!workspace||!sidebar||!chat)return;
 
     const sideHead=sidebar.querySelector('.side-head');
     const chatHead=chat.querySelector('.chat-head');
     if(!sideHead||!chatHead)return;
 
-    menu=ensureButton(chatHead,'[data-mobile-chat-menu]',{
+    const menu=ensureButton(chatHead,'[data-mobile-chat-menu]',{
       dataset:{mobileChatMenu:'1'},className:'mobile-chat-menu',ariaLabel:'Open chats',title:'Open chats',textContent:'☰'
     });
-    back=ensureButton(chatHead,'[data-mobile-chat-back]',{
+    const back=ensureButton(chatHead,'[data-mobile-chat-back]',{
       dataset:{mobileChatBack:'1'},className:'mobile-chat-back',ariaLabel:'Back to chats',title:'Back to chats',textContent:'‹'
     });
-    close=ensureButton(sideHead,'[data-mobile-sidebar-close]',{
+    const close=ensureButton(sideHead,'[data-mobile-sidebar-close]',{
       dataset:{mobileSidebarClose:'1'},className:'mobile-sidebar-close',ariaLabel:'Close chats',title:'Close chats',textContent:'‹'
     });
 
-    shade=nextWorkspace.querySelector('[data-mobile-sidebar-shade]');
+    let shade=workspace.querySelector('[data-mobile-sidebar-shade]');
     if(!shade){
       shade=document.createElement('button');
       shade.type='button';
       shade.dataset.mobileSidebarShade='1';
       shade.className='mobile-sidebar-shade';
       shade.setAttribute('aria-label','Close chat list');
-      nextWorkspace.appendChild(shade);
+      workspace.appendChild(shade);
     }
 
-    if(!bound){
-      bound=true;
+    const sync=()=>{
+      const mobile=isMobile();
+      const open=mobile&&workspace.classList.contains('mobile-sidebar-open');
+      if(!mobile)workspace.classList.remove('mobile-sidebar-open');
+      menu.hidden=!mobile||open;
+      back.hidden=!mobile||!open;
+      close.hidden=!mobile||!open;
+      shade.hidden=!mobile||!open;
+      sidebar.setAttribute('aria-hidden',mobile&&!open?'true':'false');
+    };
+
+    const setOpen=open=>{
+      if(!isMobile()){
+        workspace.classList.remove('mobile-sidebar-open');
+        sync();
+        return;
+      }
+      workspace.classList.toggle('mobile-sidebar-open',!!open);
+      try{sessionStorage.setItem('frostlink-mobile-sidebar-open',open?'1':'0')}catch{}
+      sync();
+    };
+
+    if(!workspace.dataset.mobileDelegated){
+      workspace.dataset.mobileDelegated='1';
       workspace.addEventListener('click',e=>{
         const target=e.target;
         if(target.closest('[data-mobile-chat-menu]')){
@@ -102,14 +83,25 @@
           e.preventDefault();e.stopPropagation();setOpen(false);return;
         }
         const conversation=target.closest('.conversation');
-        if(conversation&&sidebar.contains(conversation)&&isMobile()){
-          requestAnimationFrame(()=>setOpen(false));
-        }
+        if(conversation&&sidebar.contains(conversation)&&isMobile())requestAnimationFrame(()=>setOpen(false));
       },true);
-      window.addEventListener('resize',sync,{passive:true});
+    }
+
+    if(!window.__frostlinkMobileResizeBound){
+      window.__frostlinkMobileResizeBound=true;
+      window.addEventListener('resize',()=>setup(),{passive:true});
+    }
+
+    if(!window.__frostlinkMobileEscapeBound){
+      window.__frostlinkMobileEscapeBound=true;
       document.addEventListener('keydown',e=>{
-        if(e.key==='Escape'&&isMobile()&&workspace?.classList.contains('mobile-sidebar-open')){
-          e.preventDefault();setOpen(false);
+        if(e.key!=='Escape'||!isMobile())return;
+        const ws=document.querySelector('.workspace');
+        if(ws?.classList.contains('mobile-sidebar-open')){
+          e.preventDefault();
+          ws.classList.remove('mobile-sidebar-open');
+          try{sessionStorage.setItem('frostlink-mobile-sidebar-open','0')}catch{}
+          setup();
         }
       });
     }
@@ -122,5 +114,5 @@
   }
 
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',setup);else setup();
-  new MutationObserver(()=>setup()).observe(document.documentElement,{childList:true,subtree:true});
+  new MutationObserver(setup).observe(document.documentElement,{childList:true,subtree:true});
 })();
