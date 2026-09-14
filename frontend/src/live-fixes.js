@@ -10,6 +10,9 @@ let currentUserId=null;
 let typingTimer=null;
 let typingActive=false;
 let videoAsFile=false;
+let readInFlight=false;
+let observerTimer=null;
+const seenIncomingMessages=new Set();
 const unread=new Map();
 const API=import.meta.env.VITE_API_URL||'http://localhost:3001';
 const UNREAD_KEY='frostlink:unread:v1';
@@ -74,10 +77,11 @@ function addReadStatus(msgId,read=true){
   status.textContent=read?'✓✓':'✓';status.title=read?'Read':'Sent';status.classList.toggle('read',read);
 }
 async function markIncomingRead(){
-  if(!activeConversationId||!shouldMarkRead(activeConversationId))return;
-  const incoming=[...document.querySelectorAll(`.msg.theirs[data-message-id]`)];
-  for(const el of incoming){const id=el.dataset.messageId;if(id&&!el.dataset.frostRead){el.dataset.frostRead='1';try{await api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'})}catch{}}}
-  clearUnread(activeConversationId);
+  if(readInFlight||!activeConversationId||!shouldMarkRead(activeConversationId))return;
+  const incoming=[...document.querySelectorAll(`.msg.theirs[data-message-id]:not([data-frost-read])`)].map(el=>{el.dataset.frostRead='1';return el.dataset.messageId}).filter(Boolean);
+  if(!incoming.length){clearUnread(activeConversationId);return}
+  readInFlight=true;
+  try{await Promise.all(incoming.map(id=>api(`/api/messages/${encodeURIComponent(id)}/read`,{method:'POST',body:'{}'}).catch(()=>null)));clearUnread(activeConversationId)}finally{readInFlight=false}
 }
 function renderReadToggle(){
   const actions=document.querySelector('.chat-head .chat-actions');if(!actions||!activeConversationId)return;
@@ -128,13 +132,13 @@ function installSocket(){
     const handleTyping=x=>{if(x?.conversation_id===activeConversationId&&x.user_id!==currentUserId)setTyping(x.active?`${x.sender||'Someone'} is typing…`:'')};
     realtimeSocket.on('typing',handleTyping);realtimeSocket.on('typing:start',x=>handleTyping({...x,active:true}));realtimeSocket.on('typing:stop',x=>handleTyping({...x,active:false}));
     realtimeSocket.on('message:read',x=>{if(x?.message_id&&x.user_id!==currentUserId)addReadStatus(x.message_id,true)});
-    realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId)return;incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId)){setTimeout(markIncomingRead,60)}});
+    realtimeSocket.on('message:new',m=>{if(!m?.conversation_id||m.sender_id===currentUserId||!m.id)return;if(seenIncomingMessages.has(m.id))return;seenIncomingMessages.add(m.id);if(seenIncomingMessages.size>1000)seenIncomingMessages.delete(seenIncomingMessages.values().next().value);incrementUnread(m.conversation_id);if(m.conversation_id===activeConversationId&&shouldMarkRead(activeConversationId)){setTimeout(markIncomingRead,60)}});
   }).catch(()=>{});
 }
 function persistTheme(){const app=document.querySelector('.app');if(!app)return;const saved=localStorage.getItem('frostlink-theme-bg');if(saved){app.classList.remove('bg-aurora','bg-midnight','bg-ice');app.classList.add('bg-'+saved)}if(installed)return;installed=true;new MutationObserver(()=>{const cls=[...app.classList].find(x=>x.startsWith('bg-'));if(cls)localStorage.setItem('frostlink-theme-bg',cls.slice(3))}).observe(app,{attributes:true,attributeFilter:['class']})}
 function boot(){
   const wait=()=>{if(document.querySelector('.app')){persistTheme();addTypingUi();installSocket();installTyping();installMediaMode();installFetchMode();loadConversations();resolveActive();markIncomingRead();renderReadToggle()}else setTimeout(wait,250)};wait();
-  const observer=new MutationObserver(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();renderReadToggle();markIncomingRead();renderUnread()});
+  const observer=new MutationObserver(()=>{clearTimeout(observerTimer);observerTimer=setTimeout(()=>{addTypingUi();installTyping();installMediaMode();installFetchMode();resolveActive();renderReadToggle();renderUnread()},150)});
   observer.observe(document.body,{childList:true,subtree:true});
 }
 boot();
