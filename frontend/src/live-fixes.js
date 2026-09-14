@@ -13,7 +13,7 @@ let videoAsFile=false;
 const API=import.meta.env.VITE_API_URL||'http://localhost:3001';
 
 async function token(){try{const {data}=await supabase.auth.getSession();currentUserId=data.session?.user?.id||null;return data.session?.access_token||''}catch{return ''}}
-async function api(path,opt={}){const t=await token();return fetch(API+path,{...opt,headers:{Authorization:`Bearer ${t}`,'Content-Type':'application/json',...(opt.headers||{})})}
+async function api(path,opt={}){const t=await token();return fetch(API+path,{...opt,headers:{Authorization:`Bearer ${t}`,'Content-Type':'application/json',...(opt.headers||{})}})}
 
 async function loadConversations(){try{const r=await api('/api/conversations');const j=await r.json();conversations=j.conversations||[]}catch{conversations=[]}resolveActive()}
 function resolveActive(){
