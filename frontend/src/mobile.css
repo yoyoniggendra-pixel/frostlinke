@@ -1,1 +1,33 @@
-@media (max-width:760px){.sidebar{transform:translateX(-102%);pointer-events:none;visibility:hidden;z-index:30}.workspace.mobile-sidebar-open .sidebar{transform:translateX(0);pointer-events:auto;visibility:visible}.mobile-sidebar-shade{position:absolute;inset:0;z-index:25;border:0;background:#0008;opacity:0;pointer-events:none}.workspace.mobile-sidebar-open .mobile-sidebar-shade{opacity:1;pointer-events:auto}.mobile-chat-menu,.mobile-chat-back,.mobile-sidebar-close{display:grid;place-items:center}.mobile-chat-menu[hidden],.mobile-chat-back[hidden],.mobile-sidebar-close[hidden],.mobile-sidebar-shade[hidden]{display:none!important}}
+/* FROSTLINK mobile UI — responsive drawer/search layer */
+@media (max-width:760px){
+  html,body,#root{width:100%;height:100%;overflow:hidden}
+  .app{height:100dvh;min-height:100dvh;padding:0;gap:0}
+  .topbar{height:54px;min-height:54px;border-radius:0;padding:0 10px;max-width:none}
+  .brand{gap:8px}.brand b{font-size:13px;letter-spacing:3px}.brand small{display:none}.snow{font-size:20px}
+  .status{display:none}.top-actions{gap:2px}.top-actions button{width:34px;height:34px}
+  .workspace{position:relative;width:100%;height:calc(100dvh - 54px);min-height:0;margin:0;border-radius:0;display:block;overflow:hidden}
+  .sidebar{position:absolute;inset:0 auto 0 0;width:min(88vw,340px);height:100%;z-index:30;display:flex;flex-direction:column;transform:translateX(-102%);pointer-events:none;visibility:hidden;transition:transform .22s ease;box-shadow:18px 0 50px #0009;background:#03101afE}
+  .workspace.mobile-sidebar-open .sidebar{transform:translateX(0);pointer-events:auto;visibility:visible}
+  .mobile-sidebar-shade{position:absolute;inset:0;z-index:25;border:0;background:#0008;opacity:0;pointer-events:none;transition:opacity .22s ease}
+  .workspace.mobile-sidebar-open .mobile-sidebar-shade{opacity:1;pointer-events:auto}
+  .side-head{height:58px;min-height:58px;padding:0 10px}.side-head h2{font-size:15px}
+  .mobile-chat-menu,.mobile-chat-back,.mobile-sidebar-close{display:grid;place-items:center;border:1px solid #6bdcff30;background:#061b28e8;color:#dff8ff;box-shadow:0 4px 18px #0005;cursor:pointer;flex:none}
+  .mobile-chat-menu,.mobile-chat-back{width:34px;height:34px;border-radius:10px}.mobile-sidebar-close{width:32px;height:32px;border-radius:9px;margin-left:auto}
+  .mobile-chat-menu[hidden],.mobile-chat-back[hidden],.mobile-sidebar-close[hidden],.mobile-sidebar-shade[hidden]{display:none!important}
+
+  /* The existing React username search remains the single source of truth. On mobile it is laid out in-flow so results never cover the chat list. */
+  .sidebar .search{position:relative;top:auto;left:auto;right:auto;z-index:7;flex:0 0 42px;height:42px;margin:10px 10px 7px;border-radius:12px}
+  .sidebar .search input{font-size:12px;min-width:0;width:100%}
+  .sidebar .user-results{position:relative;top:auto;left:auto;right:auto;z-index:8;flex:0 0 auto;max-height:min(42dvh,330px);overflow-y:auto;margin:0 10px 7px;padding:5px;border-radius:13px;background:#061521f5;box-shadow:0 15px 45px #0009}
+  .sidebar .user-results button{min-height:48px;padding:8px}.sidebar .user-results .avatar{width:34px;height:34px}
+  .sidebar .search-empty,.sidebar .search-error{padding:10px}
+  .sidebar .conversation-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:2px 7px 10px}
+  .conversation{padding:10px 8px;border-radius:12px;min-height:58px}.avatar{width:36px;height:36px}.conv-copy b{font-size:11px}.conv-copy small{font-size:9px}
+
+  .chat{position:absolute;inset:0;width:100%;height:100%;z-index:1}.side-head,.chat-head{height:58px;min-height:58px;padding:0 10px}.chat-head{padding-left:7px}.chat-head h2{font-size:13px}
+  .messages{padding:18px 9px 18px}.msg{max-width:91%;gap:6px;margin-bottom:15px}.bubble{padding:10px 11px}.bubble p{font-size:12px;line-height:1.45}.bubble>img,.bubble>video{max-width:min(280px,100%);max-height:310px}
+  .latest{bottom:82px}.composer-wrap{padding:6px 7px calc(7px + env(safe-area-inset-bottom))}.composer{gap:5px}.composer input{height:34px;border-radius:11px;padding:0 10px;font-size:11px}.composer>button{width:34px;height:34px;border-radius:10px}.composer-wrap>small{display:none}
+  .embed-shell{width:100%;max-width:100%}.embed-popout{left:8px;right:8px;bottom:8px;width:auto}.side-panel{right:8px;top:8px;width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:18px}
+  .modal-backdrop{padding:8px}.modal{width:100%;max-width:none;max-height:94dvh;border-radius:18px;padding:14px}.emoji-grid{grid-template-columns:repeat(6,1fr)}
+}
+@media (max-width:420px){.sidebar{width:min(92vw,330px)}.msg{max-width:94%}.messages{padding-left:7px;padding-right:7px}.composer{gap:4px}.composer input{font-size:10px;padding:0 9px}}
