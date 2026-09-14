@@ -2,44 +2,125 @@
 (function(){
   const MOBILE='(max-width: 760px)';
   const isMobile=()=>window.matchMedia(MOBILE).matches;
+  let workspace=null;
+  let sidebar=null;
+  let chat=null;
+  let menu=null;
+  let back=null;
+  let close=null;
+  let shade=null;
+  let bound=false;
+
+  function ensureButton(parent,selector,props){
+    let el=parent.querySelector(selector);
+    if(!el){
+      el=document.createElement('button');
+      el.type='button';
+      Object.entries(props).forEach(([k,v])=>{
+        if(k==='dataset')Object.assign(el.dataset,v);
+        else if(k==='className')el.className=v;
+        else if(k==='textContent')el.textContent=v;
+        else if(k==='ariaLabel')el.setAttribute('aria-label',v);
+        else if(k==='title')el.title=v;
+      });
+      parent.appendChild(el);
+    }
+    return el;
+  }
+
+  function sync(){
+    if(!workspace||!sidebar||!chat||!menu||!back||!close||!shade)return;
+    const mobile=isMobile();
+    const open=workspace.classList.contains('mobile-sidebar-open');
+    if(!mobile)workspace.classList.remove('mobile-sidebar-open');
+    const actualOpen=mobile&&open;
+    menu.hidden=!mobile||actualOpen;
+    back.hidden=!mobile||actualOpen;
+    close.hidden=!mobile||!actualOpen;
+    shade.hidden=!mobile||!actualOpen;
+    sidebar.setAttribute('aria-hidden',mobile&&!actualOpen?'true':'false');
+    if(mobile){
+      sidebar.setAttribute('role','navigation');
+      sidebar.setAttribute('aria-label','Chats and username search');
+    }else sidebar.removeAttribute('aria-hidden');
+  }
+
+  function setOpen(open){
+    if(!workspace)return;
+    if(!isMobile()){
+      workspace.classList.remove('mobile-sidebar-open');
+      sync();
+      return;
+    }
+    workspace.classList.toggle('mobile-sidebar-open',!!open);
+    try{sessionStorage.setItem('frostlink-mobile-sidebar-open',open?'1':'0')}catch{}
+    sync();
+  }
 
   function setup(){
-    const workspace=document.querySelector('.workspace');
-    const sidebar=document.querySelector('.sidebar');
-    const chat=document.querySelector('.chat');
-    if(!workspace||!sidebar||!chat)return;
+    const nextWorkspace=document.querySelector('.workspace');
+    const nextSidebar=nextWorkspace?.querySelector('.sidebar');
+    const nextChat=nextWorkspace?.querySelector('.chat');
+    if(!nextWorkspace||!nextSidebar||!nextChat)return;
+
+    workspace=nextWorkspace;
+    sidebar=nextSidebar;
+    chat=nextChat;
+
     const sideHead=sidebar.querySelector('.side-head');
     const chatHead=chat.querySelector('.chat-head');
     if(!sideHead||!chatHead)return;
 
-    let menu=chatHead.querySelector('[data-mobile-chat-menu]');
-    if(!menu){menu=document.createElement('button');menu.type='button';menu.dataset.mobileChatMenu='1';menu.className='mobile-chat-menu';menu.setAttribute('aria-label','Open chats');menu.title='Open chats';menu.textContent='☰';chatHead.prepend(menu)}
-    let back=chatHead.querySelector('[data-mobile-chat-back]');
-    if(!back){back=document.createElement('button');back.type='button';back.dataset.mobileChatBack='1';back.className='mobile-chat-back';back.setAttribute('aria-label','Back to chats');back.title='Back to chats';back.textContent='‹';chatHead.prepend(back)}
-    let close=sideHead.querySelector('[data-mobile-sidebar-close]');
-    if(!close){close=document.createElement('button');close.type='button';close.dataset.mobileSidebarClose='1';close.className='mobile-sidebar-close';close.setAttribute('aria-label','Close chats');close.title='Close chats';close.textContent='‹';sideHead.appendChild(close)}
-    let shade=workspace.querySelector('[data-mobile-sidebar-shade]');
-    if(!shade){shade=document.createElement('button');shade.type='button';shade.dataset.mobileSidebarShade='1';shade.className='mobile-sidebar-shade';shade.setAttribute('aria-label','Close chat list');workspace.appendChild(shade)}
+    menu=ensureButton(chatHead,'[data-mobile-chat-menu]',{
+      dataset:{mobileChatMenu:'1'},className:'mobile-chat-menu',ariaLabel:'Open chats',title:'Open chats',textContent:'☰'
+    });
+    back=ensureButton(chatHead,'[data-mobile-chat-back]',{
+      dataset:{mobileChatBack:'1'},className:'mobile-chat-back',ariaLabel:'Back to chats',title:'Back to chats',textContent:'‹'
+    });
+    close=ensureButton(sideHead,'[data-mobile-sidebar-close]',{
+      dataset:{mobileSidebarClose:'1'},className:'mobile-sidebar-close',ariaLabel:'Close chats',title:'Close chats',textContent:'‹'
+    });
 
-    const sync=()=>{const mobile=isMobile(),open=workspace.classList.contains('mobile-sidebar-open');menu.hidden=!mobile||open;back.hidden=!mobile||!open;close.hidden=!mobile||!open;shade.hidden=!mobile||!open;sidebar.setAttribute('aria-hidden',mobile&&!open?'true':'false')};
-    const setOpen=open=>{if(!isMobile()){workspace.classList.remove('mobile-sidebar-open');sync();return}workspace.classList.toggle('mobile-sidebar-open',!!open);try{sessionStorage.setItem('frostlink-mobile-sidebar-open',open?'1':'0')}catch{}sync()};
-
-    /* Delegate from the stable workspace so React can freely rerender/replace the header buttons. */
-    if(!workspace.dataset.mobileDelegated){
-      workspace.dataset.mobileDelegated='1';
-      workspace.addEventListener('click',e=>{
-        if(e.target.closest('[data-mobile-chat-menu]')){e.preventDefault();e.stopPropagation();setOpen(true);return}
-        if(e.target.closest('[data-mobile-chat-back]')||e.target.closest('[data-mobile-sidebar-close]')||e.target.closest('[data-mobile-sidebar-shade]')){e.preventDefault();e.stopPropagation();setOpen(false);return}
-        const conversation=e.target.closest('.conversation');
-        if(conversation&&sidebar.contains(conversation)&&isMobile())requestAnimationFrame(()=>requestAnimationFrame(()=>setOpen(false)));
-      });
-      window.addEventListener('resize',sync,{passive:true});
+    shade=nextWorkspace.querySelector('[data-mobile-sidebar-shade]');
+    if(!shade){
+      shade=document.createElement('button');
+      shade.type='button';
+      shade.dataset.mobileSidebarShade='1';
+      shade.className='mobile-sidebar-shade';
+      shade.setAttribute('aria-label','Close chat list');
+      nextWorkspace.appendChild(shade);
     }
-    let saved='0';try{saved=sessionStorage.getItem('frostlink-mobile-sidebar-open')||'0'}catch{}
+
+    if(!bound){
+      bound=true;
+      workspace.addEventListener('click',e=>{
+        const target=e.target;
+        if(target.closest('[data-mobile-chat-menu]')){
+          e.preventDefault();e.stopPropagation();setOpen(true);return;
+        }
+        if(target.closest('[data-mobile-chat-back]')||target.closest('[data-mobile-sidebar-close]')||target.closest('[data-mobile-sidebar-shade]')){
+          e.preventDefault();e.stopPropagation();setOpen(false);return;
+        }
+        const conversation=target.closest('.conversation');
+        if(conversation&&sidebar.contains(conversation)&&isMobile()){
+          requestAnimationFrame(()=>setOpen(false));
+        }
+      },true);
+      window.addEventListener('resize',sync,{passive:true});
+      document.addEventListener('keydown',e=>{
+        if(e.key==='Escape'&&isMobile()&&workspace?.classList.contains('mobile-sidebar-open')){
+          e.preventDefault();setOpen(false);
+        }
+      });
+    }
+
+    let saved='0';
+    try{saved=sessionStorage.getItem('frostlink-mobile-sidebar-open')||'0'}catch{}
     if(isMobile()&&saved==='1')workspace.classList.add('mobile-sidebar-open');
+    else if(isMobile())workspace.classList.remove('mobile-sidebar-open');
     sync();
   }
 
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',setup);else setup();
-  new MutationObserver(setup).observe(document.documentElement,{childList:true,subtree:true});
+  new MutationObserver(()=>setup()).observe(document.documentElement,{childList:true,subtree:true});
 })();
