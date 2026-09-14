@@ -82,9 +82,15 @@
         if(target.closest('[data-mobile-chat-back]')||target.closest('[data-mobile-sidebar-close]')||target.closest('[data-mobile-sidebar-shade]')){
           e.preventDefault();e.stopPropagation();setOpen(false);return;
         }
+        /*
+         * Do not handle generic sidebar clicks in the capturing phase.
+         * React owns the search/results/conversation controls. Running this
+         * handler before React can cancel or interfere with those controls,
+         * which is especially visible on mobile where the drawer is dynamic.
+         */
         const conversation=target.closest('.conversation');
         if(conversation&&sidebar.contains(conversation)&&isMobile())requestAnimationFrame(()=>setOpen(false));
-      },true);
+      });
     }
 
     if(!window.__frostlinkMobileResizeBound){
