@@ -1,61 +1,9 @@
 const http=require('http');
 const {URL}=require('url');
 const originalCreateServer=http.createServer;
-
-async function getDb(){
-  const {createClient}=await import('@supabase/supabase-js');
-  return createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);
-}
-async function authUser(req){
-  const token=String(req.headers.authorization||'').replace(/^Bearer\s+/,'');
-  if(!token)return null;
-  const db=await getDb();
-  const {data,error}=await db.auth.getUser(token);
-  return error||!data.user?null:{db,user:data.user};
-}
-function json(res,status,body){
-  res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':process.env.FRONTEND_URL||'*','Access-Control-Allow-Credentials':'true'});
-  res.end(JSON.stringify(body));
-}
-
-http.createServer=function patchedCreateServer(requestListener){
-  return originalCreateServer.call(http,async(req,res)=>{
-    const url=new URL(req.url||'/',`http://${req.headers.host||'localhost'}`);
-    if(req.method==='POST'&&/^\/api\/messages\/[^/]+\/read$/.test(url.pathname)){
-      try{
-        const auth=await authUser(req);
-        if(!auth)return json(res,401,{error:'Invalid session'});
-        const messageId=decodeURIComponent(url.pathname.split('/')[3]);
-        const {data:message,error:messageError}=await auth.db.from('messages').select('id,conversation_id,sender_id').eq('id',messageId).maybeSingle();
-        if(messageError)return json(res,500,{error:messageError.message});
-        if(!message)return json(res,404,{error:'Message not found'});
-        if(message.sender_id===auth.user.id)return json(res,400,{error:'You cannot mark your own message as read.'});
-        const {data:member,error:memberError}=await auth.db.from('conversation_members').select('user_id').eq('conversation_id',message.conversation_id).eq('user_id',auth.user.id).maybeSingle();
-        if(memberError)return json(res,500,{error:memberError.message});
-        if(!member)return json(res,403,{error:'Not a member of this conversation'});
-        const {data:read,error:readError}=await auth.db.from('message_reads').upsert({message_id:message.id,user_id:auth.user.id,read_at:new Date().toISOString()},{onConflict:'message_id,user_id'}).select().single();
-        if(readError)return json(res,500,{error:readError.message});
-        return json(res,200,{ok:true,read});
-      }catch(e){return json(res,500,{error:e.message||'Could not mark message as read'});}
-    }
-    if(req.method==='GET'&&url.pathname==='/api/messages/read-status'){
-      try{
-        const auth=await authUser(req);
-        if(!auth)return json(res,401,{error:'Invalid session'});
-        const conversationId=String(url.searchParams.get('conversation_id')||'');
-        if(!conversationId)return json(res,400,{error:'conversation_id is required'});
-        const {data:member,error:memberError}=await auth.db.from('conversation_members').select('user_id').eq('conversation_id',conversationId).eq('user_id',auth.user.id).maybeSingle();
-        if(memberError)return json(res,500,{error:memberError.message});
-        if(!member)return json(res,403,{error:'Not a member of this conversation'});
-        const {data:rows,error}=await auth.db.from('message_reads').select('message_id,user_id,read_at').eq('user_id',auth.user.id).in('message_id',(await auth.db.from('messages').select('id').eq('conversation_id',conversationId).neq('sender_id',auth.user.id)).data?.map(x=>x.id)||[]);
-        if(error)return json(res,500,{error:error.message});
-        const {data:sent,error:sentError}=await auth.db.from('messages').select('id').eq('conversation_id',conversationId).eq('sender_id',auth.user.id);
-        if(sentError)return json(res,500,{error:sentError.message});
-        const sentIds=new Set((sent||[]).map(x=>x.id));
-        const readIds=(rows||[]).filter(x=>!sentIds.has(x.message_id)).map(x=>x.message_id);
-        return json(res,200,{message_ids:readIds});
-      }catch(e){return json(res,500,{error:e.message||'Could not load read status'});}
-    }
-    return requestListener(req,res);
-  });
-};
+async function getDb(){const{createClient}=await import('@supabase/supabase-js');return createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY)}
+async function authUser(req){const token=String(req.headers.authorization||'').replace(/^Bearer\s+/,'');if(!token)return null;const db=await getDb();const{data,error}=await db.auth.getUser(token);return error||!data.user?null:{db,user:data.user}}
+function json(res,status,body){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':process.env.FRONTEND_URL||'*','Access-Control-Allow-Credentials':'true'});res.end(JSON.stringify(body))}
+http.createServer=function patchedCreateServer(requestListener){return originalCreateServer.call(http,async(req,res)=>{const url=new URL(req.url||'/','http://'+(req.headers.host||'localhost'));if(req.method==='POST'&&/^\/api\/messages\/[^/]+\/read$/.test(url.pathname)){try{const auth=await authUser(req);if(!auth)return json(res,401,{error:'Invalid session'});const messageId=decodeURIComponent(url.pathname.split('/')[3]);const{data:message,error:messageError}=await auth.db.from('messages').select('id,conversation_id,sender_id').eq('id',messageId).maybeSingle();if(messageError)return json(res,500,{error:messageError.message});if(!message)return json(res,404,{error:'Message not found'});if(message.sender_id===auth.user.id)return json(res,400,{error:'You cannot mark your own message as read.'});const{data:member,error:memberError}=await auth.db.from('conversation_members').select('user_id').eq('conversation_id',message.conversation_id).eq('user_id',auth.user.id).maybeSingle();if(memberError)return json(res,500,{error:memberError.message});if(!member)return json(res,403,{error:'Not a member of this conversation'});const{data:read,error:readError}=await auth.db.from('message_reads').upsert({message_id:message.id,user_id:auth.user.id,read_at:new Date().toISOString()},{onConflict:'message_id,user_id'}).select().single();if(readError)return json(res,500,{error:readError.message});return json(res,200,{ok:true,read})}catch(e){return json(res,500,{error:e.message||'Could not mark message as read'})}}
+if(req.method==='GET'&&url.pathname==='/api/messages/read-status'){try{const auth=await authUser(req);if(!auth)return json(res,401,{error:'Invalid session'});const conversationId=String(url.searchParams.get('conversation_id')||'');if(!conversationId)return json(res,400,{error:'conversation_id is required'});const{data:member,error:memberError}=await auth.db.from('conversation_members').select('user_id').eq('conversation_id',conversationId).eq('user_id',auth.user.id).maybeSingle();if(memberError)return json(res,500,{error:memberError.message});if(!member)return json(res,403,{error:'Not a member of this conversation'});const{data:sent,error:sentError}=await auth.db.from('messages').select('id').eq('conversation_id',conversationId).eq('sender_id',auth.user.id);if(sentError)return json(res,500,{error:sentError.message});const ids=(sent||[]).map(x=>x.id);if(!ids.length)return json(res,200,{message_ids:[]});const{data:rows,error}=await auth.db.from('message_reads').select('message_id,user_id,read_at').in('message_id',ids).neq('user_id',auth.user.id);if(error)return json(res,500,{error:error.message});return json(res,200,{message_ids:(rows||[]).map(x=>x.message_id)})}catch(e){return json(res,500,{error:e.message||'Could not load read status'})}}
+return requestListener(req,res)})}
