@@ -8,6 +8,7 @@ style.textContent=`
 .embed-popout{left:14px!important;bottom:14px!important;width:min(672px,calc(100vw - 28px))!important;z-index:200!important}
 .embed-popout-frame{width:min(100%,420px)!important;height:min(746px,70vh)!important;max-height:70vh!important;aspect-ratio:9 / 16!important;margin:0 auto!important;overflow:hidden!important;border-radius:10px!important;background:#000!important;position:relative!important}
 .embed-popout-frame .embed{width:100%!important;height:100%!important;display:block!important;opacity:1!important;pointer-events:auto!important}
+.frost-inline-embed{display:block!important;width:100%!important;max-width:420px!important;margin:10px 0 4px!important}
 @media(max-width:600px){.embed-shell{width:min(100%,calc(100vw - 40px))!important;height:min(calc((100vw - 40px) * 1.7778),calc(100vh - 150px))!important;min-height:0!important;aspect-ratio:9 / 16!important}.embed-popout{left:8px!important;bottom:8px!important;width:calc(100vw - 16px)!important}.embed-popout-frame{width:min(100%,calc(100vw - 32px))!important;height:min(calc((100vw - 32px) * 1.7778),62vh)!important;max-height:62vh!important;aspect-ratio:9 / 16!important}}
 `;
 document.head.appendChild(style);
@@ -66,8 +67,52 @@ function normalizeEmbedIframe(iframe){
  iframe.style.pointerEvents='auto';
 }
 
+function extractInlineEmbeds(text){
+ const raw=String(text||'');
+ const matches=raw.match(/https?:\/\/[^\s<>"']+/gi)||[];
+ const seen=new Set();
+ return matches.map(value=>{
+  const clean=value.replace(/[),.!?;:]+$/,'');
+  if(seen.has(clean))return null;
+  seen.add(clean);
+  try{
+   const data=parseEmbedLocally(clean);
+   if(!data.embedUrl||!['youtube','vimeo','spotify'].includes(data.provider))return null;
+   return data;
+  }catch{return null}
+ }).filter(Boolean);
+}
+
+function installInlineTextEmbeds(root=document){
+ if(window.__frostLinkAsText)return;
+ root.querySelectorAll?.('.messages .msg').forEach(msg=>{
+  if(msg.dataset.frostInlineEmbeds==='1')return;
+  if(msg.querySelector('.embed-shell iframe.embed,.embed-popout-frame iframe.embed')){msg.dataset.frostInlineEmbeds='1';return}
+  const textNode=msg.querySelector('.bubble > p');
+  if(!textNode)return;
+  const embeds=extractInlineEmbeds(textNode.textContent||'');
+  if(!embeds.length)return;
+  embeds.forEach(data=>{
+   const shell=document.createElement('div');
+   shell.className='embed-shell frost-inline-embed';
+   const iframe=document.createElement('iframe');
+   iframe.className='embed';
+   iframe.src=data.embedUrl;
+   iframe.title=data.title||data.provider||'Embedded content';
+   iframe.loading='lazy';
+   iframe.allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+   iframe.allowFullscreen=true;
+   shell.appendChild(iframe);
+   textNode.parentElement.appendChild(shell);
+  });
+  msg.dataset.frostInlineEmbeds='1';
+  scanEmbeds(msg);
+ });
+}
+
 function scanEmbeds(root=document){
  root.querySelectorAll?.('.embed-shell iframe.embed,.embed-popout-frame iframe.embed').forEach(normalizeEmbedIframe);
+ installInlineTextEmbeds(root);
 }
 
 scanEmbeds();
@@ -77,4 +122,4 @@ new MutationObserver(mutations=>{
  }
 }).observe(document.documentElement,{subtree:true,childList:true});
 
-window.FROSTLINK_EMBED_HELPER={parseEmbedLocally,cacheEmbedMeta};
+window.FROSTLINK_EMBED_HELPER={parseEmbedLocally,cacheEmbedMeta,extractInlineEmbeds};
