@@ -83,9 +83,16 @@ function extractInlineEmbeds(text){
  }).filter(Boolean);
 }
 
+function messageRoots(root=document){
+ const out=[];
+ if(root?.nodeType===1&&root.matches?.('.messages .msg'))out.push(root);
+ root.querySelectorAll?.('.messages .msg').forEach(el=>out.push(el));
+ return out;
+}
+
 function installInlineTextEmbeds(root=document){
  if(window.__frostLinkAsText)return;
- root.querySelectorAll?.('.messages .msg').forEach(msg=>{
+ messageRoots(root).forEach(msg=>{
   if(msg.dataset.frostInlineEmbeds==='1')return;
   if(msg.querySelector('.embed-shell iframe.embed,.embed-popout-frame iframe.embed')){msg.dataset.frostInlineEmbeds='1';return}
   const textNode=msg.querySelector('.bubble > p');
@@ -106,7 +113,7 @@ function installInlineTextEmbeds(root=document){
    textNode.parentElement.appendChild(shell);
   });
   msg.dataset.frostInlineEmbeds='1';
-  scanEmbeds(msg);
+  msg.querySelectorAll('.frost-inline-embed iframe.embed').forEach(normalizeEmbedIframe);
  });
 }
 
